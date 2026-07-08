@@ -45,9 +45,11 @@ export function assessDanger(
   // 敵の地力: strength(0..1) と性格の enemyLethality を合成
   let risk = 0.08 + enemy.strength * 0.45 + character.biases.enemyLethality * 0.12;
 
-  if (player.hasWeapon) {
+  // 武器の段階: 1（初期の短剣）が基準。剣なら下がり、折れて素手なら上がる
+  if (player.weaponTier >= 2) {
     risk -= 0.12;
-  } else {
+  } else if (player.weaponTier === 0) {
+    risk += 0.1;
     factors.push('まともな得物がない');
   }
 
@@ -75,12 +77,13 @@ export function assessDanger(
     factors.push('傷を負っている');
   }
 
-  if (player.torch <= 0) {
-    risk += 0.12;
-    factors.push('明かりが消えている');
-  } else if (player.torch <= 20) {
+  // 暗闇での戦闘は大きく不利（予備が尽きてからが本当の暗闇）
+  if (player.torch <= 0 && player.spareTorches <= 0) {
+    risk += 0.18;
+    factors.push('暗闇の中にいる');
+  } else if (player.torch <= 20 && player.spareTorches <= 0) {
     risk += 0.06;
-    factors.push('松明は残り少ない');
+    factors.push('最後の松明が残り少ない');
   }
 
   if (player.poisonTurns > 0) {

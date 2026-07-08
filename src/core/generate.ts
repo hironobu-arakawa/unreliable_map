@@ -15,10 +15,10 @@ import type {
 } from './types';
 import { ENEMY_NAMES } from './character';
 import type { RNG } from './rng';
-import { hashSeed, mulberry32, pick, randInt, shuffle } from './rng';
+import { hashSeed, mulberry32, pick, pickWeighted, randInt, shuffle } from './rng';
 
-export const FLOOR_W = 13;
-export const FLOOR_H = 9;
+export const FLOOR_W = 21;
+export const FLOOR_H = 13;
 
 // ---- グリッド補助 ----
 
@@ -35,7 +35,10 @@ export function featureAt(floor: Floor, p: Vec): Feature | undefined {
 }
 
 export function enemyAt(floor: Floor, p: Vec): Entity | undefined {
-  return floor.entities.find((e) => e.alive && e.pos.x === p.x && e.pos.y === p.y);
+  // dormant（宝箱に潜むミミック）は開けられるまで存在しないものとして扱う
+  return floor.entities.find(
+    (e) => e.alive && !e.dormant && e.pos.x === p.x && e.pos.y === p.y,
+  );
 }
 
 export function itemAt(floor: Floor, p: Vec): Item | undefined {
@@ -156,11 +159,12 @@ function generateFloor(
     grid.push(row);
   }
 
-  // 部屋を3つ彫り、順に通路でつなぐ（必ず連結になる）
+  // 部屋を4〜5彫り、順に通路でつなぐ（必ず連結になる）
   const rooms: Room[] = [];
-  for (let i = 0; i < 3; i++) {
-    const w = randInt(rng, 3, 5);
-    const h = randInt(rng, 2, 3);
+  const roomCount = randInt(rng, 4, 5);
+  for (let i = 0; i < roomCount; i++) {
+    const w = randInt(rng, 3, 6);
+    const h = randInt(rng, 2, 4);
     const x = randInt(rng, 1, FLOOR_W - 1 - w);
     const y = randInt(rng, 1, FLOOR_H - 1 - h);
     rooms.push({ x, y, w, h });
@@ -169,6 +173,8 @@ function generateFloor(
   for (let i = 0; i + 1 < rooms.length; i++) {
     carveCorridor(grid, roomCenter(rooms[i]), roomCenter(rooms[i + 1]), rng);
   }
+  // 余剰の通路を1本足して回り道を作る（角を曲がって敵の視線を切る余地になる）
+  carveCorridor(grid, roomCenter(rooms[0]), roomCenter(rooms[rooms.length - 1]), rng);
 
   const floor: Floor = {
     depth,
@@ -203,22 +209,77 @@ function generateFloor(
     floor.features.push({ id: `f${depth}-treasure`, kind: 'treasure', pos: tPos });
   }
 
-  // 泉（たまに湧く）
-  if (rng.next() < 0.55) {
+  const upperness = maxDepth > 1 ? 1 - (depth - 1) / (maxDepth - 1) : 1;
+
+  // 泉: 見た目では飲めるか分からない。「上層の毒」の性格は水の悪さに現れる
+  const badWaterP = 0.2 + upperness * b.upperTrapRate * 0.45;
+  if (rng.next() < 0.75) {
     const p = takeFreeCell(floor, cells, used);
-    if (p) floor.features.push({ id: `f${depth}-spring`, kind: 'spring', pos: p });
+    if (p)
+      floor.features.push({
+        id: `f${depth}-spring`,
+        kind: 'spring',
+        pos: p,
+        badWater: rng.next() < badWaterP,
+      });
+    if (rng.next() < 0.3) {
+      const q = takeFreeCell(floor, cells, used);
+      if (q)
+        floor.features.push({
+          id: `f${depth}-spring2`,
+          kind: 'spring',
+          pos: q,
+          badWater: rng.next() < badWaterP,
+        });
+    }
   }
 
-  // 毒罠: 上層ほど出やすい（性格 upperTrapRate）
-  const upperness = maxDepth > 1 ? 1 - (depth - 1) / (maxDepth - 1) : 1;
-  const trapCount = Math.round(b.upperTrapRate * (0.6 + upperness * 1.8) + rng.next() * 0.5);
+  // 宝箱: 開けるまで中身は分からない（当たり/毒針/ミミック/空。§「検証行為そのものがリスク」）
+  const chestCount = rng.next() < 0.75 ? (rng.next() < 0.25 ? 2 : 1) : 0;
+  for (let i = 0; i < chestCount; i++) {
+    const p = takeFreeCell(floor, cells, used);
+    if (!p) break;
+    const content = pickWeighted(rng, [
+      ['weapon', 0.16 * (0.5 + b.rewardWeaponBias)],
+      ['potion', 0.18],
+      ['food', 0.18],
+      ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
+      ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
+      ['empty', 0.1],
+    ] as const);
+    floor.features.push({ id: `f${depth}-chest${i}`, kind: 'chest', pos: p, chestContent: content });
+    if (content === 'mimic') {
+      // 箱に潜むもの: 開けられるまで動かず、見えず、遭遇しない
+      floor.entities.push({
+        id: `e${depth}-mimic${i}`,
+        kind: 'metallic',
+        name: '箱に潜んでいたもの',
+        pos: p,
+        strength: Math.min(0.9, 0.35 + upperness * 0 + (depth - 1) * 0.12 + rng.next() * 0.15),
+        alive: true,
+        moveEvery: 1,
+        chasing: false,
+        lastSeen: null,
+        lostTurns: 0,
+        carry: pickWeighted(rng, [
+          ['potion', 0.5],
+          ['food', 0.5],
+        ] as const),
+        dormant: true,
+      });
+    }
+  }
+
+  // 毒罠: 数は控えめに（踏むかどうかは選択ではなく運。判断の主役は箱と水に移した）
+  const trapCount = Math.round(b.upperTrapRate * (0.3 + upperness * 1.0) + rng.next() * 0.4);
   for (let i = 0; i < trapCount; i++) {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.features.push({ id: `f${depth}-trap${i}`, kind: 'trap', pos: p });
   }
 
-  // 敵: 密度は低め・一体ごとの危険度は高め（性格）
-  const enemyCount = Math.max(1, Math.round(b.enemyDensity * 4 + rng.next() * 0.8));
+  // 敵: 密度は低め・一体ごとの危険度は高め（性格）。金属系は重く遅い＝走れば振り切れる
+  // 必ず何かを持っている（挑む動機。持ち物は気配・記録のヒント対象になる）
+  const enemyCount = Math.max(1, Math.round(b.enemyDensity * 6 + rng.next() * 0.9));
   for (let i = 0; i < enemyCount; i++) {
     const p = takeFreeCell(floor, cells, used);
     if (!p) break;
@@ -229,6 +290,14 @@ function generateFloor(
       0.95,
       Math.max(0.1, 0.2 + depthFrac * 0.5 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
     );
+    const carry =
+      kind === 'metallic'
+        ? rng.next() < b.rewardWeaponBias
+          ? ('weapon' as const)
+          : ('potion' as const)
+        : kind === 'beast'
+          ? ('food' as const)
+          : ('potion' as const);
     floor.entities.push({
       id: `e${depth}-${i}`,
       kind,
@@ -236,13 +305,22 @@ function generateFloor(
       pos: p,
       strength,
       alive: true,
+      moveEvery: kind === 'metallic' ? 2 : 1,
+      chasing: false,
+      lastSeen: null,
+      lostTurns: 0,
+      carry,
     });
   }
 
-  // アイテム: 糧食は各階ほぼ確実、薬はときどき、武器は中層に性格次第で
-  if (rng.next() < 0.85) {
+  // アイテム: 糧食は各階確実＋ときどき2つ（マップ拡大に合わせた消耗予算）、薬はときどき、武器は中層に性格次第で
+  {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.items.push({ id: `i${depth}-food`, kind: 'food', name: '乾いた糧食', pos: p, taken: false });
+    if (rng.next() < 0.45) {
+      const q = takeFreeCell(floor, cells, used);
+      if (q) floor.items.push({ id: `i${depth}-food2`, kind: 'food', name: '乾いた糧食', pos: q, taken: false });
+    }
   }
   if (rng.next() < 0.5) {
     const p = takeFreeCell(floor, cells, used);

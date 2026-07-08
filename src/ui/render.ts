@@ -3,6 +3,7 @@
 // 数字は一切表示しない（憲法5）。
 
 import { confidenceLabel, SOURCE_NAMES } from '../core/confidence';
+import { assessDanger } from '../core/danger';
 import { enemyAt, featureAt, itemAt } from '../core/generate';
 import {
   armorWord,
@@ -10,6 +11,7 @@ import {
   currentFloor,
   hungerWord,
   torchWord,
+  weaponWord,
   type GameState,
 } from '../core/state';
 import type { Vec } from '../core/types';
@@ -53,8 +55,11 @@ function cellChar(state: GameState, p: Vec, seen: Set<string>, walked: Set<strin
   const tile = floor.grid[p.y][p.x];
   if (tile.kind === 'wall') return '#';
 
-  const enemy = enemyAt(floor, p);
-  if (enemy) return '&';
+  // 敵は動くため「いま見えている」場合のみ描く（地形の記憶と違い、過去の目撃位置は当てにならない）
+  if (state.visibleNow.has(key(p))) {
+    const enemy = enemyAt(floor, p);
+    if (enemy) return '&';
+  }
 
   const f = featureAt(floor, p);
   if (f) {
@@ -64,8 +69,11 @@ function cellChar(state: GameState, p: Vec, seen: Set<string>, walked: Set<strin
       case 'stairsDown':
         return '>';
       case 'spring':
+        return '~'; // 良い水も悪い水も同じに見える（見た目では判別できない）
       case 'driedSpring':
-        return '~';
+        return '-'; // 乾いた窪みは見れば分かる
+      case 'chest':
+        return f.opened ? '.' : '[';
       case 'treasure':
         return f.taken ? '.' : '$';
       case 'collapse':
@@ -85,8 +93,53 @@ function box(title: string, body: string): string {
   return `─── ${title} ───\n${body}\n`;
 }
 
+/** デバッグ枠（開発者向け・内部数値の全表示。§12の精神——開発者は数字で握る） */
+function renderDebug(state: GameState): string {
+  const floor = currentFloor(state);
+  const p = state.player;
+  const lines: string[] = [];
+  lines.push(
+    `  seed=${state.instance.runSeed} turn=${state.turn} phase=${state.phase} B${floor.depth}F pos=(${state.pos.x},${state.pos.y})`,
+  );
+  lines.push(
+    `  condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure}`,
+  );
+  if (state.pending) {
+    const a = state.pending.assessment;
+    lines.push(`  encounter: risk=${a.internalRisk.toFixed(2)}（${a.label}）`);
+  }
+  for (const e of floor.entities) {
+    if (!e.alive) continue;
+    const risk = assessDanger(p, e, state.instance.character);
+    lines.push(
+      `  敵 ${e.id} ${e.name} (${e.pos.x},${e.pos.y}) str=${e.strength.toFixed(2)} speed=1/${e.moveEvery}` +
+        ` carry=${e.carry}${e.dormant ? ' 潜伏' : e.chasing ? ` 追跡中 lastSeen=(${e.lastSeen?.x},${e.lastSeen?.y}) lost=${e.lostTurns}` : ' 徘徊'}` +
+        ` risk=${risk.internalRisk.toFixed(2)}（${risk.label}）`,
+    );
+  }
+  for (const f of floor.features) {
+    if (f.kind === 'chest') {
+      lines.push(`  箱 ${f.id} (${f.pos.x},${f.pos.y}) 中身=${f.chestContent}${f.opened ? ' 開封済' : ''}`);
+    }
+    if (f.kind === 'spring') {
+      lines.push(`  泉 ${f.id} (${f.pos.x},${f.pos.y}) ${f.badWater ? '悪い水' : '良い水'}`);
+    }
+  }
+  for (const c of [...state.claims, ...state.senses]) {
+    if (c.floorDepth !== floor.depth) continue;
+    lines.push(
+      `  情報 ${c.id} ${c.source} p=${c.internalP.toFixed(2)} ${c.held ? 'HOLD' : `MISS(${c.missPattern})`}` +
+        ` ${c.kind}${c.assertedSafety ? `:${c.assertedSafety}` : ''} claimed=${c.claimedPos ? `(${c.claimedPos.x},${c.claimedPos.y})` : '-'}` +
+        ` actual=${c.actualKind}${c.actualPos ? `@(${c.actualPos.x},${c.actualPos.y})` : ''}${c.verified ? ' 済' : ''}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+export type RenderOptions = { debug?: boolean };
+
 /** 画面全体のテキストを組み立てる（§11 の1画面） */
-export function renderScreen(state: GameState): string {
+export function renderScreen(state: GameState, opts: RenderOptions = {}): string {
   const parts: string[] = [];
   const floor = currentFloor(state);
   const character = state.instance.character;
@@ -97,11 +150,13 @@ export function renderScreen(state: GameState): string {
     parts.push(state.deathLog.join('\n'));
     parts.push('');
     parts.push(box('最後の出来事', state.events.map((e) => `  ${e}`).join('\n')));
+    if (opts.debug) parts.push(box('DEBUG（開発者用・内部数値）', renderDebug(state)));
     return parts.join('\n');
   }
   if (state.phase === 'escaped' && state.escapeLog) {
     parts.push(`${character.name}\n`);
     parts.push(state.escapeLog.join('\n'));
+    if (opts.debug) parts.push('\n' + box('DEBUG（開発者用・内部数値）', renderDebug(state)));
     return parts.join('\n');
   }
 
@@ -113,7 +168,7 @@ export function renderScreen(state: GameState): string {
   parts.push(renderMap(state));
   parts.push('');
   parts.push('  @=あなた .=歩いた床 ,=見えている床 #=壁 ?=未知の境界');
-  parts.push('  <=上り階段 >=下り階段 ~=泉 $=宝 &=何かいる *=落し物 x=崩落 ^=罠の跡');
+  parts.push('  <=上り階段 >=下り階段 ~=泉 -=涸れた泉 [=宝箱 $=宝 &=何かいる *=落し物 x=崩落 ^=罠の跡');
   parts.push('');
 
   // 情景テキスト（直近の出来事: 行動後の結果と事前情報の対応 §10）
@@ -153,16 +208,20 @@ export function renderScreen(state: GameState): string {
   const p = state.player;
   const stateLines = [
     `  ${conditionWord(p.condition)}。${hungerWord(p.hunger)}。`,
-    `  ${armorWord(p.armorWear)}。${torchWord(p.torch)}。`,
+    `  ${armorWord(p.armorWear)}。${torchWord(p.torch, p.spareTorches)}。`,
   ];
   if (p.poisonTurns > 0) stateLines.push('  毒が回っている。');
-  const carry: string[] = [];
-  if (p.hasWeapon) carry.push('剣');
+  const carry: string[] = [`得物は${weaponWord(p.weaponTier)}`];
   if (p.potions > 0) carry.push(p.potions > 1 ? '薬（いくつか）' : '薬');
   if (p.food > 0) carry.push(p.food > 1 ? '糧食（いくつか）' : '糧食');
   if (p.hasTreasure) carry.push('井戸の底の宝');
-  stateLines.push(`  持ち物：${carry.length > 0 ? carry.join('、') : '何もない'}`);
+  stateLines.push(`  持ち物：${carry.join('、')}`);
   parts.push(box('状態', stateLines.join('\n')));
+
+  // デバッグ枠（?debug=1 またはバッククォートでトグル。通常プレイでは一切出ない＝憲法5維持）
+  if (opts.debug) {
+    parts.push(box('DEBUG（開発者用・内部数値）', renderDebug(state)));
+  }
 
   return parts.join('\n');
 }

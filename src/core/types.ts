@@ -28,11 +28,15 @@ export type DungeonCharacter = {
 export type FeatureKind =
   | 'stairsUp' // 上り階段（B1では入口）
   | 'stairsDown' // 下り階段
-  | 'spring' // 泉
+  | 'spring' // 泉（見た目では飲めるかどうか分からない）
   | 'driedSpring' // 枯れた泉（外れ方「条件が違う」の受け皿）
   | 'trap' // 毒罠（踏むまで見えない）
   | 'collapse' // 崩落（元は通路だった痕跡）
+  | 'chest' // 宝箱（開けるまで中身は分からない。検証行為そのものがリスク）
   | 'treasure'; // 最深部の宝
+
+/** 宝箱の中身（生成時に確定。視界では絶対に判別できない） */
+export type ChestContent = 'weapon' | 'potion' | 'food' | 'needle' | 'mimic' | 'empty';
 
 export type Feature = {
   id: string;
@@ -46,6 +50,12 @@ export type Feature = {
   taken?: boolean;
   /** 泉を飲んだ回数（飲むほど細り、やがて涸れる） */
   uses?: number;
+  /** 泉の水が悪い（毒。見た目では分からない——記録と嗅覚だけが頼り） */
+  badWater?: boolean;
+  /** 宝箱の中身 */
+  chestContent?: ChestContent;
+  /** 宝箱が開封済みか */
+  opened?: boolean;
 };
 
 export type EnemyKind = 'metallic' | 'beast' | 'shade';
@@ -57,6 +67,18 @@ export type Entity = {
   pos: Vec;
   strength: number; // 0..1
   alive: boolean;
+  /** 行動間隔。2なら1ターンおき（金属系は重く、遅い＝振り切れる） */
+  moveEvery: number;
+  /** 追跡中か。全知にはしない——「最後に見た位置」を追う */
+  chasing: boolean;
+  /** プレイヤーを最後に見た位置（視線が切れたらここへ向かい、見つからなければ諦める） */
+  lastSeen: Vec | null;
+  /** 視線を失ってからの経過ターン */
+  lostTurns: number;
+  /** 持ち物（必ず何か落とす。気配・記録のヒント対象＝挑む動機） */
+  carry: 'weapon' | 'potion' | 'food' | 'none';
+  /** 宝箱に潜んでいる（ミミック）。開けられるまで動かず、見えず、遭遇しない */
+  dormant?: boolean;
 };
 
 export type ItemKind = 'potion' | 'food' | 'weapon';
@@ -107,7 +129,7 @@ export type MissPattern =
   | 'false'; // 完全な誤情報（稀）
 
 /** 情報が主張する内容の種別 */
-export type ClaimKind = 'spring' | 'enemy' | 'trap' | 'treasure' | 'passage' | 'weapon';
+export type ClaimKind = 'spring' | 'enemy' | 'trap' | 'treasure' | 'passage' | 'weapon' | 'chest';
 
 /**
  * 古地図・メモ・気配などの情報片。
@@ -130,18 +152,30 @@ export type Claim = {
   actualPos: Vec | null;
   /** 実際に何があるか（検証・計測用の内部文字列） */
   actualKind: string;
+  /**
+   * 文面が主張する安全性（プレイヤーが文章から読み取れる情報の機械可読形）。
+   * 'good'=当たり/安全と言っている 'bad'=触るな/危険と言っている
+   */
+  assertedSafety?: 'good' | 'bad';
+  /** 動く敵についての情報は、位置ではなく敵本体の目視/撃破で検証する */
+  aboutEnemyId?: string;
   /** 検証済みフラグ（行動後の対応表示・計測を一度だけ行う） */
   verified: boolean;
 };
 
 // ---- プレイヤー状態 ----
+
+/** 武器の段階。0=素手（折れた） 1=傷んだ短剣（初期装備） 2=剣 */
+export type WeaponTier = 0 | 1 | 2;
+
 export type PlayerState = {
   condition: number; // 体調（HP相当）0..100 内部値。UIは言葉のみ
   hunger: number; // 空腹 0..100（高いほど空腹）
   armorWear: number; // 鎧の傷み 0..100
-  torch: number; // 松明 0..100（残量）
+  torch: number; // 燃えている松明の残り 0..100
+  spareTorches: number; // 予備の松明（尽きてからが本当の暗闇）
   poisonTurns: number; // 毒の残りターン
-  hasWeapon: boolean; // 拾った武器
+  weaponTier: WeaponTier;
   hasTreasure: boolean; // 最深部の宝
   potions: number;
   food: number;

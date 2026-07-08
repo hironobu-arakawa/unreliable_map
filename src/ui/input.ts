@@ -11,6 +11,9 @@ const ACTION_LABELS: Record<string, string> = {
   escape: '地上へ脱出する',
   drinkPotion: '薬を飲む',
   eat: '糧食を食べる',
+  drink: '泉の水を飲む',
+  open: '箱を開ける',
+  inspect: '調べる',
   engage: '挑む',
   retreat: '退く',
 };

@@ -2,12 +2,16 @@
 //
 // 考え方: 古地図・メモは「同じ性格の“別インスタンス”に由来する記録」（§5）。
 // 実装では §8 の解決アルゴリズムを生成時に適用する:
-//   - hold（roll < p）→ 主張を実地形に正確に一致させる
-//   - miss → 外れ方を抽選し、「理由の残る形」で主張と実地形をズラす
-//     （枯れた泉・崩落・罠の残骸などは実地形側に痕跡として植え込む）
+//   - hold（roll < p）→ 主張を実態に正確に一致させる
+//   - miss → 外れ方を抽選し、「理由の残る形」で主張と実態をズラす
+//     （枯れた泉・悪い水・漁られた箱・崩落・罠の残骸などは実態側に痕跡として植え込む）
 // すべて runSeed 由来の決定論で、プレイ開始前に確定する。
 // 「完全な誤情報」だけは別シードの兄弟インスタンスから主張を持ってくる
 // （＝本当に“別の潜行の記録”であり、現インスタンスには存在しない）。
+//
+// v0.2: 記録の主役は「宝箱を開けるか」「泉の水を飲むか」という不可逆な判断に移した。
+// 位置の情報は歩けば無料で検証できるが、箱と水は**検証行為そのものがリスク**。
+// だから記録が「地図」ではなく「賭けの資料」になる。
 
 import type {
   Claim,
@@ -34,14 +38,37 @@ export function posPhrase(floor: Floor, p: Vec): string {
   return dir === '' ? '中央のあたり' : `${dir}のあたり`;
 }
 
-// ---- 文章テンプレ（v0.1はテンプレ文。LLMは後回し §3） ----
+// ---- 文章テンプレ（v0.2はテンプレ文。LLMは後回し §3） ----
 
-function claimText(source: InfoSource, kind: ClaimKind, phrase: string, depth: number): string {
-  const t: Record<ClaimKind, Record<string, string>> = {
-    spring: {
-      oldMap: `${phrase}に泉の印が描かれている。`,
+/** variant: 'good'=当たり/安全を主張 'bad'=危険/価値なしを主張 */
+function claimText(
+  source: InfoSource,
+  kind: ClaimKind,
+  phrase: string,
+  depth: number,
+  variant: 'good' | 'bad',
+  carryHint?: string,
+): string {
+  const t: Record<string, Record<string, string>> = {
+    spring_good: {
+      oldMap: `${phrase}の泉に「良い水」と書き添えられている。`,
       survivorNote: `「${phrase}の水で命拾いした」と走り書きがある。`,
-      deathNote: `「水の匂いがする。${phrase}だ」……メモはそこで乱れている。`,
+      deathNote: `「水はある。${phrase}だ。あれを飲めば」……メモはそこで乱れている。`,
+    },
+    spring_bad: {
+      oldMap: `${phrase}の泉の印に、バツが重ねて描かれている。`,
+      survivorNote: `「${phrase}の水は飲むな。腹を下して死にかけた」とある。`,
+      deathNote: `「喉が焼ける。${phrase}の水のせいだ」……筆跡は最後まで震えている。`,
+    },
+    chest_good: {
+      oldMap: `${phrase}に箱の印と「当たり」の書き込みがある。`,
+      survivorNote: `「${phrase}の箱の中身に救われた。まだ残っているはずだ」とある。`,
+      deathNote: `「${phrase}の箱を開ければ助かる。あと少し」……記述はそこまでだ。`,
+    },
+    chest_bad: {
+      oldMap: `${phrase}の箱の印に「触るな」と殴り書きがある。`,
+      survivorNote: `「${phrase}の箱は開けるな。相棒はそれで逝った」とある。`,
+      deathNote: `「箱が。${phrase}の箱が」……血の跡が箱の方角を指している。`,
     },
     enemy: {
       oldMap: `${phrase}に「近寄るな」と書き込みがある。`,
@@ -69,9 +96,26 @@ function claimText(source: InfoSource, kind: ClaimKind, phrase: string, depth: n
       deathNote: `「武器さえあれば。${phrase}に落としてきた」とある。`,
     },
   };
-  const byKind = t[kind];
-  const text = byKind[source] ?? byKind.oldMap;
+  const tableKey =
+    kind === 'spring' || kind === 'chest' ? `${kind}_${variant}` : kind;
+  const byKind = t[tableKey];
+  let text = byKind[source] ?? byKind.oldMap;
+  if (carryHint) text += carryHint;
   return `B${depth}F——${text}`;
+}
+
+/** 敵の持ち物のヒント文（held の敵情報にだけ付く＝挑む動機になる） */
+function carryHintText(carry: string): string | undefined {
+  switch (carry) {
+    case 'weapon':
+      return '「あれは誰かの剣を引きずっていた」とも。';
+    case 'potion':
+      return '「奴の巣に薬瓶が転がっていた」とも。';
+    case 'food':
+      return '「誰かの糧袋を漁っていた」とも。';
+    default:
+      return undefined;
+  }
 }
 
 // ---- 外れ方の適用 ----
@@ -118,17 +162,26 @@ function tryPlantCollapse(floor: Floor, pos: Vec): boolean {
 
 // ---- 生成本体 ----
 
-type Candidate = { kind: ClaimKind; pos: Vec; enemyId?: string; featureId?: string; itemId?: string };
+type Candidate = {
+  kind: ClaimKind;
+  pos: Vec;
+  enemyId?: string;
+  featureId?: string;
+  itemId?: string;
+};
 
 function collectCandidates(rng: RNG, floor: Floor): Candidate[] {
   const out: Candidate[] = [];
   for (const f of floor.features) {
     if (f.kind === 'spring') out.push({ kind: 'spring', pos: f.pos, featureId: f.id });
+    // 生成時から空の箱は記録の対象にしない（空箱の噂は判断を生まない。空は「古い情報」の外れ方から生まれる）
+    if (f.kind === 'chest' && f.chestContent !== 'empty')
+      out.push({ kind: 'chest', pos: f.pos, featureId: f.id });
     if (f.kind === 'trap') out.push({ kind: 'trap', pos: f.pos, featureId: f.id });
     if (f.kind === 'treasure') out.push({ kind: 'treasure', pos: f.pos, featureId: f.id });
   }
   for (const e of floor.entities) {
-    out.push({ kind: 'enemy', pos: e.pos, enemyId: e.id });
+    if (!e.dormant) out.push({ kind: 'enemy', pos: e.pos, enemyId: e.id });
   }
   for (const i of floor.items) {
     if (i.kind === 'weapon' && i.pos) out.push({ kind: 'weapon', pos: i.pos, itemId: i.id });
@@ -141,16 +194,22 @@ function collectCandidates(rng: RNG, floor: Floor): Candidate[] {
 /** 情報種別ごとに、意味を成す外れ方の候補（§8） */
 const ALLOWED_MISS: Record<ClaimKind, MissPattern[]> = {
   spring: ['drift', 'condition', 'false'],
-  enemy: ['drift', 'misread', 'false'],
+  chest: ['drift', 'stale', 'misread', 'false'],
+  enemy: ['misread', 'false'], // 敵は動き回るので「位置ズレ」は外れ方として意味を成さない
   trap: ['drift', 'stale', 'false'],
   treasure: ['drift'], // 宝は必ず存在する（勝利条件）。外れは位置ズレのみ
   passage: ['stale'],
   weapon: ['drift', 'condition', 'false'],
 };
 
+/** 箱の中身から「当たりか」を判定 */
+function chestIsGood(content: string | undefined): boolean {
+  return content === 'weapon' || content === 'potion' || content === 'food';
+}
+
 /**
  * 古地図・生還者メモ・死亡者メモを生成し、当否を解決する。
- * miss の場合は実地形に「理由」を植え込む（インスタンスを変異させる）ため、
+ * miss の場合は実態に「理由」を植え込む（インスタンスを変異させる）ため、
  * 必ずプレイ開始前・生成パイプラインの一部として呼ぶこと。
  */
 export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[] {
@@ -163,13 +222,18 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
 
   for (const floor of instance.floors) {
     const candidates = shuffle(rng, collectCandidates(rng, floor));
-    // 各階1〜2件。最深階は宝の情報を必ず1件入れる（潜る動機）
+    // 各階2〜3件。箱・泉（＝賭けの対象）を優先し、最深階は宝の情報を必ず入れる
     const picked: Candidate[] = [];
     const treasureCand = candidates.find((c) => c.kind === 'treasure');
     if (treasureCand) picked.push(treasureCand);
+    const bets = candidates.filter((c) => c.kind === 'chest' || c.kind === 'spring');
+    for (const c of bets) {
+      if (picked.length >= 3) break;
+      picked.push(c);
+    }
     for (const c of candidates) {
-      if (picked.length >= 2) break;
-      if (c === treasureCand) continue;
+      if (picked.length >= 3) break;
+      if (picked.includes(c)) continue;
       picked.push(c);
     }
 
@@ -191,20 +255,50 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
       let claimedPos: Vec = cand.pos;
       let actualPos: Vec | null = cand.pos;
       let actualKind: string = cand.kind;
+      let variant: 'good' | 'bad' = 'good';
+      let carryHint: string | undefined;
 
-      if (!held) {
+      const feature = cand.featureId
+        ? floor.features.find((x) => x.id === cand.featureId)
+        : undefined;
+      const enemy = cand.enemyId
+        ? floor.entities.find((x) => x.id === cand.enemyId)
+        : undefined;
+
+      // 実態から文面の主張（安全/危険）を決める（heldならそのまま、missなら後で歪む）
+      if (cand.kind === 'spring') {
+        variant = feature?.badWater ? 'bad' : 'good';
+        actualKind = feature?.badWater ? 'badSpring' : 'goodSpring';
+      } else if (cand.kind === 'chest') {
+        variant = chestIsGood(feature?.chestContent) ? 'good' : 'bad';
+        actualKind = `chest_${feature?.chestContent}`;
+      }
+
+      if (held) {
+        if (cand.kind === 'enemy' && enemy) {
+          carryHint = carryHintText(enemy.carry);
+        }
+      } else {
         switch (missPattern) {
           case 'drift': {
-            // 位置が少しズレる: 主張位置をずらす。実物は元の場所に在る
+            // 位置が少しズレる: 主張位置をずらす。実物は元の場所に在る（文面の中身は正しい）
             claimedPos = jitterPos(rng, floor, cand.pos);
             break;
           }
           case 'condition': {
-            // 内容は合うが条件が違う: 泉は枯れている / 剣は朽ちている
-            if (cand.kind === 'spring' && cand.featureId) {
-              const f = floor.features.find((x) => x.id === cand.featureId);
-              if (f) f.kind = 'driedSpring';
-              actualKind = 'driedSpring';
+            // 内容は合うが条件が違う:
+            //  泉→「良い水」と言うが、実際は涸れている/悪い水 / 剣→朽ちている
+            if (cand.kind === 'spring' && feature) {
+              variant = 'good'; // 文面は当たりを主張する
+              if (feature.badWater) {
+                actualKind = 'badSpring'; // 既に悪い水: 記録が古く、当時は良かったのだろう
+              } else if (rng.next() < 0.5) {
+                feature.kind = 'driedSpring';
+                actualKind = 'driedSpring';
+              } else {
+                feature.badWater = true;
+                actualKind = 'badSpring';
+              }
             } else if (cand.kind === 'weapon' && cand.itemId) {
               const it = floor.items.find((x) => x.id === cand.itemId);
               if (it) {
@@ -216,56 +310,73 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
             break;
           }
           case 'stale': {
-            // 古い情報: 通路は崩れている / 罠はもう朽ちている
+            // 古い情報: 通路は崩れている / 罠は朽ちている / 箱は先に漁られて空
             if (cand.kind === 'passage') {
               if (!tryPlantCollapse(floor, cand.pos)) {
-                // 到達性を壊すなら崩落は置けない → この情報は結果的に正しい
-                held = true;
+                held = true; // 到達性を壊すなら崩落は置けない → 結果的に正しい情報
                 missPattern = undefined;
               } else {
                 actualKind = 'collapse';
               }
-            } else if (cand.kind === 'trap' && cand.featureId) {
-              const f = floor.features.find((x) => x.id === cand.featureId);
-              if (f) f.triggered = true; // 発動済み＝朽ちた残骸
+            } else if (cand.kind === 'trap' && feature) {
+              feature.triggered = true; // 発動済み＝朽ちた残骸
               actualKind = 'brokenTrap';
+            } else if (cand.kind === 'chest' && feature) {
+              if (chestIsGood(feature.chestContent)) {
+                variant = 'good'; // 「当たりの箱」と言うが、先に漁られている
+                feature.chestContent = 'empty';
+                actualKind = 'chest_empty';
+              } else {
+                // 危険な箱が「古い情報」になるのは不自然 → 誤認に振り替える
+                missPattern = 'misread';
+                variant = chestIsGood(feature.chestContent) ? 'bad' : 'good';
+                actualKind = `chest_${feature.chestContent}`;
+              }
             }
             break;
           }
           case 'misread': {
-            // 主観の誤認: 「金属音」は敵ではなく罠だった（§8の例そのまま）
-            if (cand.kind === 'enemy' && cand.enemyId) {
-              const e = floor.entities.find((x) => x.id === cand.enemyId);
-              if (e) {
-                e.alive = false; // 敵は最初から存在しない（誤認だった）
-                floor.features.push({
-                  id: `f${floor.depth}-misread-${claimNo}`,
-                  kind: 'trap',
-                  pos: e.pos,
-                });
-              }
+            // 主観の誤認:
+            //  敵→「金属音」は罠だった / 箱→安全と危険を取り違えた警告
+            if (cand.kind === 'enemy' && enemy) {
+              enemy.alive = false; // 敵は最初から存在しない（誤認だった）
+              floor.features.push({
+                id: `f${floor.depth}-misread-${claimNo}`,
+                kind: 'trap',
+                pos: enemy.pos,
+              });
               actualKind = 'trap';
+            } else if (cand.kind === 'chest' && feature) {
+              // 文面は実態の逆を主張する（安全な箱に「触るな」/ 危険な箱に「当たり」）
+              variant = chestIsGood(feature.chestContent) ? 'bad' : 'good';
+              actualKind = `chest_${feature.chestContent}`;
             }
             break;
           }
           case 'false': {
             // 完全な誤情報（稀）: 兄弟インスタンス（別の潜行）由来の主張。
-            // 現インスタンスの同種の実物と偶然重ならない位置を選ぶ（重なると「誤情報」でなくなる）
+            // 現インスタンスの同種の実物と偶然重ならない位置を選ぶ
             const sibFloor = sibling.floors[Math.min(floor.depth - 1, sibling.floors.length - 1)];
             const sibCells = shuffle(rng, floorCells(sibFloor));
             const collides = (p: Vec): boolean => {
               const f = floor.features.find((x) => x.pos.x === p.x && x.pos.y === p.y);
-              const e = floor.entities.find((x) => x.alive && x.pos.x === p.x && x.pos.y === p.y);
+              const e = floor.entities.find(
+                (x) => x.alive && !x.dormant && x.pos.x === p.x && x.pos.y === p.y,
+              );
               if (cand.kind === 'spring') return f?.kind === 'spring';
+              if (cand.kind === 'chest') return f?.kind === 'chest';
               if (cand.kind === 'trap') return f?.kind === 'trap';
               if (cand.kind === 'enemy') return e !== undefined;
               if (cand.kind === 'weapon')
-                return floor.items.some((i) => i.kind === 'weapon' && i.pos?.x === p.x && i.pos?.y === p.y);
+                return floor.items.some(
+                  (i) => i.kind === 'weapon' && i.pos?.x === p.x && i.pos?.y === p.y,
+                );
               return false;
             };
             claimedPos = sibCells.find((p) => !collides(p)) ?? pick(rng, sibCells);
             actualPos = null;
             actualKind = 'nothing';
+            variant = 'good'; // 誤情報は「そこに何かある」と言う
             break;
           }
         }
@@ -278,11 +389,14 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
         kind: cand.kind,
         floorDepth: floor.depth,
         claimedPos,
-        text: claimText(source, cand.kind, posPhrase(floor, claimedPos), floor.depth),
+        text: claimText(source, cand.kind, posPhrase(floor, claimedPos), floor.depth, variant, carryHint),
         held,
         missPattern,
         actualPos,
         actualKind,
+        assertedSafety: cand.kind === 'spring' || cand.kind === 'chest' ? variant : undefined,
+        // 当たりの敵情報は、動き回る敵本体の目視/撃破で検証する
+        aboutEnemyId: held && cand.kind === 'enemy' ? cand.enemyId : undefined,
         verified: false,
       });
     }

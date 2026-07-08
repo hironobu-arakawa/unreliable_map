@@ -18,6 +18,8 @@ const screenEl = document.getElementById('screen')!;
 const actionsEl = document.getElementById('actions')!;
 
 let state: GameState = newGame(SILENT_WELL, seedFromUrl());
+// デバッグ表示（開発者用）: ?debug=1 で起動時ON、バッククォート（`）でトグル
+let debugMode = new URLSearchParams(location.search).has('debug');
 
 // ---- 計測フック（開発者向け・非表示 §12） ----
 // UIには一切出さない。コンソールと window.__telemetry で数字を握る
@@ -50,7 +52,7 @@ function onAction(a: Action): void {
 }
 
 function draw(): void {
-  screenEl.textContent = renderScreen(state);
+  screenEl.textContent = renderScreen(state, { debug: debugMode });
   renderActions(actionsEl as HTMLElement, state, onAction);
   if (state.phase === 'dead' || state.phase === 'escaped') {
     const btn = document.createElement('button');
@@ -67,4 +69,10 @@ function draw(): void {
 
 exposeTelemetry();
 bindKeyboard(() => state, onAction);
+window.addEventListener('keydown', (ev) => {
+  if (ev.key === '`') {
+    debugMode = !debugMode;
+    draw();
+  }
+});
 draw();

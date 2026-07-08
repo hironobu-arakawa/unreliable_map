@@ -70,16 +70,21 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
     for (const c of claims) {
       const floor = inst.floors[c.floorDepth - 1];
       if (c.held && c.actualPos) {
-        // 当たりの情報は、実地形にそのまま実在するはず
+        // 当たりの情報は、実態にそのまま一致するはず（安全性の主張まで含めて）
+        const f = featureAt(floor, c.actualPos);
         const ok =
-          (c.kind === 'spring' && featureAt(floor, c.actualPos)?.kind === 'spring') ||
-          (c.kind === 'trap' &&
-            featureAt(floor, c.actualPos)?.kind === 'trap' &&
-            !featureAt(floor, c.actualPos)?.triggered) ||
-          (c.kind === 'treasure' && featureAt(floor, c.actualPos)?.kind === 'treasure') ||
+          (c.kind === 'spring' &&
+            f?.kind === 'spring' &&
+            (c.assertedSafety === 'bad') === f.badWater) ||
+          (c.kind === 'chest' &&
+            f?.kind === 'chest' &&
+            (c.assertedSafety === 'good') ===
+              ['weapon', 'potion', 'food'].includes(f.chestContent ?? '')) ||
+          (c.kind === 'trap' && f?.kind === 'trap' && !f?.triggered) ||
+          (c.kind === 'treasure' && f?.kind === 'treasure') ||
           (c.kind === 'enemy' && enemyAt(floor, c.actualPos) !== undefined) ||
           (c.kind === 'weapon' && itemAt(floor, c.actualPos)?.kind === 'weapon' && !itemAt(floor, c.actualPos)?.broken) ||
-          (c.kind === 'passage' && featureAt(floor, c.actualPos) === undefined);
+          (c.kind === 'passage' && f === undefined);
         if (!ok) holdMismatch++;
       }
       if (!c.held && c.missPattern === 'drift') {
@@ -91,6 +96,7 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
         const e = enemyAt(floor, c.claimedPos);
         const bad =
           (c.kind === 'spring' && f?.kind === 'spring') ||
+          (c.kind === 'chest' && f?.kind === 'chest') ||
           (c.kind === 'enemy' && e !== undefined) ||
           (c.kind === 'trap' && f?.kind === 'trap');
         if (bad) falseBad++;
@@ -145,7 +151,7 @@ function autoplay(seed: number): BotResult {
   const state: GameState = newGame(SILENT_WELL, seed);
   const bot = mulberry32(hashSeed(seed, 'bot'));
   let guard = 0;
-  while (state.phase !== 'dead' && state.phase !== 'escaped' && guard < 1500) {
+  while (state.phase !== 'dead' && state.phase !== 'escaped' && guard < 4000) {
     guard++;
     const actions = availableActions(state);
     if (actions.length === 0) break;
@@ -160,6 +166,10 @@ function autoplay(seed: number): BotResult {
       const has = (t: Action['type']) => here.find((a) => a.type === t);
       if (p.hunger >= 70 && has('eat')) chosen = { type: 'eat' };
       else if (p.condition <= 35 && has('drinkPotion')) chosen = { type: 'drinkPotion' };
+      else if (has('open') && bot.next() < 0.75) chosen = { type: 'open' };
+      else if (has('drink') && (p.hunger > 40 || p.condition < 80) && bot.next() < 0.6)
+        chosen = { type: 'drink' };
+      else if (has('inspect') && bot.next() < 0.1) chosen = { type: 'inspect' };
       else if (p.condition <= 45 && bot.next() < 0.5 && has('rest')) chosen = { type: 'rest' };
       else if (p.hasTreasure && has('escape')) chosen = { type: 'escape' };
       else if (p.hasTreasure && has('ascend')) chosen = { type: 'ascend' };
