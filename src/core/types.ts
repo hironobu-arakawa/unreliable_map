@@ -36,7 +36,15 @@ export type FeatureKind =
   | 'treasure'; // 最深部の宝
 
 /** 宝箱の中身（生成時に確定。視界では絶対に判別できない） */
-export type ChestContent = 'weapon' | 'potion' | 'food' | 'needle' | 'mimic' | 'empty';
+export type ChestContent =
+  | 'weapon'
+  | 'potion'
+  | 'food'
+  | 'talisman' // 模様の札
+  | 'treasure' // 持ち帰るべき宝（箱型のランでのみ）
+  | 'needle'
+  | 'mimic'
+  | 'empty';
 
 export type Feature = {
   id: string;
@@ -76,12 +84,14 @@ export type Entity = {
   /** 視線を失ってからの経過ターン */
   lostTurns: number;
   /** 持ち物（必ず何か落とす。気配・記録のヒント対象＝挑む動機） */
-  carry: 'weapon' | 'potion' | 'food' | 'none';
+  carry: 'weapon' | 'potion' | 'food' | 'treasure' | 'none';
   /** 宝箱に潜んでいる（ミミック）。開けられるまで動かず、見えず、遭遇しない */
   dormant?: boolean;
+  /** 最深部の主（宝を抱く守り手。ボス型のランでのみ） */
+  boss?: boolean;
 };
 
-export type ItemKind = 'potion' | 'food' | 'weapon';
+export type ItemKind = 'potion' | 'food' | 'weapon' | 'stone' | 'talisman';
 
 export type Item = {
   id: string;
@@ -91,7 +101,18 @@ export type Item = {
   taken: boolean;
   /** 朽ちていて使い物にならない（外れ方「条件が違う」の受け皿） */
   broken?: boolean;
+  /** 札の模様。模様から属性は察知できない（対応はランごとにシャッフル） */
+  pattern?: string;
 };
+
+/** 札の模様ごとの真実（ランごとに確定。見た目からは読めない） */
+export type TalismanLore = Record<
+  string,
+  { strongVs: EnemyKind; backfireVs: EnemyKind }
+>;
+
+/** 宝の出所（ランごとにシードで決まる） */
+export type TreasureMode = 'chest' | 'boss';
 
 export type Floor = {
   depth: number; // 1 = B1
@@ -108,6 +129,10 @@ export type DungeonInstance = {
   character: DungeonCharacter;
   runSeed: number;
   floors: Floor[];
+  /** 宝の出所（箱の中か、主が抱いているか） */
+  treasureMode: TreasureMode;
+  /** 札の模様→効果の対応（ランごとにシャッフル。UIには出さない） */
+  talismanLore: TalismanLore;
 };
 
 // ---- 情報片 ----
@@ -129,7 +154,15 @@ export type MissPattern =
   | 'false'; // 完全な誤情報（稀）
 
 /** 情報が主張する内容の種別 */
-export type ClaimKind = 'spring' | 'enemy' | 'trap' | 'treasure' | 'passage' | 'weapon' | 'chest';
+export type ClaimKind =
+  | 'spring'
+  | 'enemy'
+  | 'trap'
+  | 'treasure'
+  | 'passage'
+  | 'weapon'
+  | 'chest'
+  | 'lore'; // 札の相性など、場所に紐付かない知識（floorDepth=0で全域扱い）
 
 /**
  * 古地図・メモ・気配などの情報片。
@@ -145,6 +178,14 @@ export type Claim = {
   claimedPos: Vec | null;
   /** プレイヤーに見せる文章（テンプレ文） */
   text: string;
+  /**
+   * 信頼度の物理的手がかり（憲法6の射影を「怪しい」等のラベルではなく
+   * 字の乱れ・紙の状態などの固定語彙で見せる。同じ内部確率帯は常に同じ語彙群）
+   */
+  cue: string;
+  /** 札の相性の噂が指す対象（lore専用） */
+  lorePattern?: string;
+  loreTargetKind?: EnemyKind;
   /** 解決結果（生成時に確定。地形はこの結果を織り込んで最終化される） */
   held: boolean;
   missPattern?: MissPattern;
@@ -179,5 +220,7 @@ export type PlayerState = {
   hasTreasure: boolean; // 最深部の宝
   potions: number;
   food: number;
+  stones: number; // 投げる石（安全だが弱い）
+  talismans: Record<string, number>; // 模様→枚数
   ownLog: Claim[]; // 自分の過去ログ（p=0.70..0.90 枠。v0.1では最小限）
 };

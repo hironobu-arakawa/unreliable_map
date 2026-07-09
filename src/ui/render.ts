@@ -1,8 +1,10 @@
-// 画面テキスト組み立て §11
-// core の状態を読んで画面テキストを組み立てるだけ。ゲームロジックは持たない。
+// 画面HTML組み立て §11
+// core の状態を読んで各パネルのHTML片を組み立てるだけ。ゲームロジックは持たない。
 // 数字は一切表示しない（憲法5）。
+// 色は記号の「種類」にだけ使う。情報の信頼度を色分けすることは決してしない——
+// 信頼度は字の乱れ・紙の状態の手がかり語彙で読ませる（憲法6の体験を色で先回りしない）。
 
-import { confidenceLabel, SOURCE_NAMES } from '../core/confidence';
+import { SOURCE_NAMES } from '../core/confidence';
 import { assessDanger } from '../core/danger';
 import { enemyAt, featureAt, itemAt } from '../core/generate';
 import {
@@ -10,6 +12,7 @@ import {
   conditionWord,
   currentFloor,
   hungerWord,
+  KIND_WORD,
   torchWord,
   weaponWord,
   type GameState,
@@ -18,25 +21,18 @@ import type { Vec } from '../core/types';
 
 const key = (p: Vec) => `${p.x},${p.y}`;
 
-/** 3層マップの描画（踏破・視界は事実のみ。未知の境界は ? §9.2） */
-function renderMap(state: GameState): string {
-  const floor = currentFloor(state);
-  const know = state.knowledge[state.floorIndex];
-  const lines: string[] = [];
-  for (let y = 0; y < floor.height; y++) {
-    let line = '  ';
-    for (let x = 0; x < floor.width; x++) {
-      const p = { x, y };
-      line += cellChar(state, p, know.seen, know.walked);
-    }
-    lines.push(line);
-  }
-  return lines.join('\n');
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function cellChar(state: GameState, p: Vec, seen: Set<string>, walked: Set<string>): string {
+// ---- マップ ----
+
+type Cell = { ch: string; cls: string | null };
+
+/** cellChar 相当。文字に加えて種類（＝色クラス）を返す */
+function cellInfo(state: GameState, p: Vec, seen: Set<string>, walked: Set<string>): Cell {
   const floor = currentFloor(state);
-  if (state.pos.x === p.x && state.pos.y === p.y) return '@';
+  if (state.pos.x === p.x && state.pos.y === p.y) return { ch: '@', cls: 'c-you' };
 
   if (!seen.has(key(p))) {
     // 未知の境界 ?: 見えている床に隣接する未知マス（進めば新情報、ただしリスク §9.2）
@@ -47,88 +43,202 @@ function cellChar(state: GameState, p: Vec, seen: Set<string>, walked: Set<strin
       { x: p.x + 1, y: p.y },
     ];
     for (const a of adj) {
-      if (seen.has(key(a)) && floor.grid[a.y]?.[a.x]?.kind === 'floor') return '?';
+      if (seen.has(key(a)) && floor.grid[a.y]?.[a.x]?.kind === 'floor')
+        return { ch: '?', cls: 'c-edge' };
     }
-    return ' '; // 未探索の闇
+    return { ch: ' ', cls: null }; // 未探索の闇
   }
 
   const tile = floor.grid[p.y][p.x];
-  if (tile.kind === 'wall') return '#';
+  if (tile.kind === 'wall') return { ch: '#', cls: 'c-wall' };
 
   // 敵は動くため「いま見えている」場合のみ描く（地形の記憶と違い、過去の目撃位置は当てにならない）
   if (state.visibleNow.has(key(p))) {
     const enemy = enemyAt(floor, p);
-    if (enemy) return '&';
+    if (enemy) return { ch: '&', cls: 'c-enemy' };
   }
+
+  const walkedFloor: Cell = walked.has(key(p))
+    ? { ch: '.', cls: 'c-walk' }
+    : { ch: ',', cls: 'c-seen' };
 
   const f = featureAt(floor, p);
   if (f) {
     switch (f.kind) {
       case 'stairsUp':
-        return '<';
+        return { ch: '<', cls: 'c-stairs' };
       case 'stairsDown':
-        return '>';
+        return { ch: '>', cls: 'c-stairs' };
       case 'spring':
-        return '~'; // 良い水も悪い水も同じに見える（見た目では判別できない）
+        return { ch: '~', cls: 'c-water' }; // 良い水も悪い水も同じに見える（見た目では判別できない）
       case 'driedSpring':
-        return '-'; // 乾いた窪みは見れば分かる
+        return { ch: '-', cls: 'c-dry' }; // 乾いた窪みは見れば分かる
       case 'chest':
-        return f.opened ? '.' : '[';
+        return f.opened ? walkedFloor : { ch: '[', cls: 'c-chest' };
       case 'treasure':
-        return f.taken ? '.' : '$';
+        return f.taken ? walkedFloor : { ch: '$', cls: 'c-gold' };
       case 'collapse':
-        return 'x';
+        return { ch: 'x', cls: 'c-ruin' };
       case 'trap':
-        return f.triggered ? '^' : walked.has(key(p)) ? '.' : ','; // 未発動の罠は見えない
+        return f.triggered ? { ch: '^', cls: 'c-ruin' } : walkedFloor; // 未発動の罠は見えない
     }
   }
   const item = itemAt(floor, p);
-  if (item) return '*';
+  if (item) return { ch: '*', cls: 'c-item' };
 
-  return walked.has(key(p)) ? '.' : ',';
+  return walkedFloor;
 }
 
-function box(title: string, body: string): string {
-  if (!body.trim()) return '';
-  return `─── ${title} ───\n${body}\n`;
+function renderMapHtml(state: GameState): string {
+  const floor = currentFloor(state);
+  const know = state.knowledge[state.floorIndex];
+  const lines: string[] = [];
+  for (let y = 0; y < floor.height; y++) {
+    let line = '';
+    for (let x = 0; x < floor.width; x++) {
+      const p = { x, y };
+      const cell = cellInfo(state, p, know.seen, know.walked);
+      if (!cell.cls) {
+        line += cell.ch;
+        continue;
+      }
+      const visible = state.visibleNow.has(key(p)) || cell.ch === '@';
+      line += `<span class="${cell.cls}${visible ? ' v' : ''}">${escapeHtml(cell.ch)}</span>`;
+    }
+    lines.push(line);
+  }
+  return lines.join('\n');
 }
 
-/** デバッグ枠（開発者向け・内部数値の全表示。§12の精神——開発者は数字で握る） */
+/** 松明の帯→マップの明るさクラス。帯は torchWord と同じ粗さ（数字は漏れない） */
+function torchClass(torch: number): string {
+  if (torch > 60) return 'torch-bright';
+  if (torch > 30) return 'torch-flicker';
+  if (torch > 0) return 'torch-low';
+  return 'torch-dark';
+}
+
+// ---- 各パネル ----
+
+/** 出来事: 直近ターンが明るく、過去は薄れる（履歴はUI層が持つ） */
+function renderEventsHtml(history: string[][]): string {
+  const shown = history.slice(-3);
+  const items: string[] = [];
+  shown.forEach((group, i) => {
+    const age = shown.length - 1 - i; // 0=最新
+    const cls = age === 0 ? '' : ` class="old${age}"`;
+    for (const line of group) items.push(`<li${cls}>${escapeHtml(line)}</li>`);
+  });
+  return items.join('');
+}
+
+function renderSensesHtml(state: GameState): string {
+  const floor = currentFloor(state);
+  const senses = state.senses.filter((s) => s.floorDepth === floor.depth && !s.verified);
+  return senses
+    .map(
+      (s) =>
+        `<li>${escapeHtml(s.text)}<span class="meta">（気配——${escapeHtml(s.cue)}）</span></li>`,
+    )
+    .join('');
+}
+
+function renderClaimsHtml(state: GameState): string {
+  const floor = currentFloor(state);
+  // この階の記録＋場所に紐付かない知識。信頼度は字の乱れ・紙の状態などの
+  // 手がかりで伝える——数字もラベルも出さない（§9.1・憲法5）
+  const claims = state.claims.filter((c) => c.floorDepth === floor.depth || c.floorDepth === 0);
+  return claims
+    .map((c) => {
+      const done = c.verified ? '<span class="ok">〔検証済み〕</span>' : '';
+      return `<li>${escapeHtml(c.text)}<span class="meta">（${SOURCE_NAMES[c.source]}——${escapeHtml(c.cue)}）</span>${done}</li>`;
+    })
+    .join('');
+}
+
+function renderStatusHtml(state: GameState): string {
+  const p = state.player;
+  const lines: string[] = [
+    `<div class="line">${conditionWord(p.condition)}。${hungerWord(p.hunger)}。</div>`,
+    `<div class="line">${armorWord(p.armorWear)}。${torchWord(p.torch, p.spareTorches)}。</div>`,
+  ];
+  if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
+  const carry: string[] = [`得物は${weaponWord(p.weaponTier)}`];
+  if (p.potions > 0) carry.push(p.potions > 1 ? '薬（いくつか）' : '薬');
+  if (p.food > 0) carry.push(p.food > 1 ? '糧食（いくつか）' : '糧食');
+  if (p.stones > 0) carry.push(p.stones > 1 ? '石（いくつか）' : '石');
+  for (const [pattern, count] of Object.entries(p.talismans)) {
+    if (count <= 0) continue;
+    // 自分で投げて見た効果は確定の知識として添える（憲法2）
+    const known = Object.entries(state.talismanKnowledge[pattern] ?? {})
+      .map(([kind, eff]) =>
+        eff === 'strong'
+          ? `${KIND_WORD[kind]}に効いた`
+          : eff === 'backfire'
+            ? `${KIND_WORD[kind]}には逆効き`
+            : `${KIND_WORD[kind]}には並`,
+      )
+      .join('・');
+    carry.push(`${pattern}の札${count > 1 ? '（数枚）' : ''}${known ? `〔${known}〕` : ''}`);
+  }
+  if (p.hasTreasure) carry.push('迷宮の底の宝');
+  lines.push(`<div class="line">持ち物：${escapeHtml(carry.join('、'))}</div>`);
+  return lines.join('');
+}
+
+/** 結末（死亡ログ/生還記録）。持ち越し等のメタ行はUI層（main.ts）が追記する */
+function renderEndHtml(lines: string[]): string {
+  return lines
+    .map((l, i) =>
+      i === 0
+        ? `<div class="head">${escapeHtml(l)}</div>`
+        : `<div class="line">${escapeHtml(l)}</div>`,
+    )
+    .join('');
+}
+
+// ---- デバッグ枠（開発者向け・内部数値の全表示。§12の精神——開発者は数字で握る） ----
+
 function renderDebug(state: GameState): string {
   const floor = currentFloor(state);
   const p = state.player;
   const lines: string[] = [];
   lines.push(
-    `  seed=${state.instance.runSeed} turn=${state.turn} phase=${state.phase} B${floor.depth}F pos=(${state.pos.x},${state.pos.y})`,
+    `seed=${state.instance.runSeed} turn=${state.turn} phase=${state.phase} B${floor.depth}F pos=(${state.pos.x},${state.pos.y}) 宝=${state.instance.treasureMode}`,
   );
   lines.push(
-    `  condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure}`,
+    `札: ${Object.entries(state.instance.talismanLore)
+      .map(([pt, l]) => `${pt}→効く:${l.strongVs}/逆:${l.backfireVs}`)
+      .join(' ')} 石=${state.player.stones} 札所持=${JSON.stringify(state.player.talismans)}`,
+  );
+  lines.push(
+    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure}`,
   );
   if (state.pending) {
     const a = state.pending.assessment;
-    lines.push(`  encounter: risk=${a.internalRisk.toFixed(2)}（${a.label}）`);
+    lines.push(`encounter: risk=${a.internalRisk.toFixed(2)}（${a.label}）`);
   }
   for (const e of floor.entities) {
     if (!e.alive) continue;
     const risk = assessDanger(p, e, state.instance.character);
     lines.push(
-      `  敵 ${e.id} ${e.name} (${e.pos.x},${e.pos.y}) str=${e.strength.toFixed(2)} speed=1/${e.moveEvery}` +
+      `敵 ${e.id} ${e.name} (${e.pos.x},${e.pos.y}) str=${e.strength.toFixed(2)} speed=1/${e.moveEvery}` +
         ` carry=${e.carry}${e.dormant ? ' 潜伏' : e.chasing ? ` 追跡中 lastSeen=(${e.lastSeen?.x},${e.lastSeen?.y}) lost=${e.lostTurns}` : ' 徘徊'}` +
         ` risk=${risk.internalRisk.toFixed(2)}（${risk.label}）`,
     );
   }
   for (const f of floor.features) {
     if (f.kind === 'chest') {
-      lines.push(`  箱 ${f.id} (${f.pos.x},${f.pos.y}) 中身=${f.chestContent}${f.opened ? ' 開封済' : ''}`);
+      lines.push(`箱 ${f.id} (${f.pos.x},${f.pos.y}) 中身=${f.chestContent}${f.opened ? ' 開封済' : ''}`);
     }
     if (f.kind === 'spring') {
-      lines.push(`  泉 ${f.id} (${f.pos.x},${f.pos.y}) ${f.badWater ? '悪い水' : '良い水'}`);
+      lines.push(`泉 ${f.id} (${f.pos.x},${f.pos.y}) ${f.badWater ? '悪い水' : '良い水'}`);
     }
   }
   for (const c of [...state.claims, ...state.senses]) {
-    if (c.floorDepth !== floor.depth) continue;
+    if (c.floorDepth !== floor.depth && c.floorDepth !== 0) continue;
     lines.push(
-      `  情報 ${c.id} ${c.source} p=${c.internalP.toFixed(2)} ${c.held ? 'HOLD' : `MISS(${c.missPattern})`}` +
+      `情報 ${c.id} ${c.source} p=${c.internalP.toFixed(2)} ${c.held ? 'HOLD' : `MISS(${c.missPattern})`}` +
         ` ${c.kind}${c.assertedSafety ? `:${c.assertedSafety}` : ''} claimed=${c.claimedPos ? `(${c.claimedPos.x},${c.claimedPos.y})` : '-'}` +
         ` actual=${c.actualKind}${c.actualPos ? `@(${c.actualPos.x},${c.actualPos.y})` : ''}${c.verified ? ' 済' : ''}`,
     );
@@ -136,92 +246,49 @@ function renderDebug(state: GameState): string {
   return lines.join('\n');
 }
 
-export type RenderOptions = { debug?: boolean };
+// ---- 画面全体 ----
 
-/** 画面全体のテキストを組み立てる（§11 の1画面） */
-export function renderScreen(state: GameState, opts: RenderOptions = {}): string {
-  const parts: string[] = [];
+export type RenderOptions = {
+  debug?: boolean;
+  /** 出来事の履歴（新しいものが末尾。UI層が保持する） */
+  eventHistory?: string[][];
+};
+
+export type ScreenView = {
+  title: string;
+  mapHtml: string;
+  /** #map に付ける明るさクラス（松明の帯と連動） */
+  torchClass: string;
+  eventsHtml: string;
+  sensesHtml: string;
+  claimsHtml: string;
+  statusHtml: string;
+  end: { kind: 'dead' | 'escaped'; bodyHtml: string } | null;
+  debugText: string | null;
+};
+
+/** 1画面ぶんのHTML片を組み立てる（§11）。DOMへの反映は main.ts が行う */
+export function renderView(state: GameState, opts: RenderOptions = {}): ScreenView {
   const floor = currentFloor(state);
   const character = state.instance.character;
+  const history = opts.eventHistory ?? [state.events];
 
-  // 終局画面
+  let end: ScreenView['end'] = null;
   if (state.phase === 'dead' && state.deathLog) {
-    parts.push(`${character.name}\n`);
-    parts.push(state.deathLog.join('\n'));
-    parts.push('');
-    parts.push(box('最後の出来事', state.events.map((e) => `  ${e}`).join('\n')));
-    if (opts.debug) parts.push(box('DEBUG（開発者用・内部数値）', renderDebug(state)));
-    return parts.join('\n');
-  }
-  if (state.phase === 'escaped' && state.escapeLog) {
-    parts.push(`${character.name}\n`);
-    parts.push(state.escapeLog.join('\n'));
-    if (opts.debug) parts.push('\n' + box('DEBUG（開発者用・内部数値）', renderDebug(state)));
-    return parts.join('\n');
+    end = { kind: 'dead', bodyHtml: renderEndHtml(state.deathLog) };
+  } else if (state.phase === 'escaped' && state.escapeLog) {
+    end = { kind: 'escaped', bodyHtml: renderEndHtml(state.escapeLog) };
   }
 
-  // タイトル
-  parts.push(`${character.name} B${floor.depth}F`);
-  parts.push('');
-
-  // マップ枠
-  parts.push(renderMap(state));
-  parts.push('');
-  parts.push('  @=あなた .=歩いた床 ,=見えている床 #=壁 ?=未知の境界');
-  parts.push('  <=上り階段 >=下り階段 ~=泉 -=涸れた泉 [=宝箱 $=宝 &=何かいる *=落し物 x=崩落 ^=罠の跡');
-  parts.push('');
-
-  // 情景テキスト（直近の出来事: 行動後の結果と事前情報の対応 §10）
-  if (state.events.length > 0) {
-    parts.push(box('出来事', state.events.map((e) => `  ${e}`).join('\n')));
-  }
-
-  // 気配（方向ごとの音・匂い。信頼度ラベル付き）
-  const senses = state.senses.filter((s) => s.floorDepth === floor.depth && !s.verified);
-  if (senses.length > 0) {
-    parts.push(
-      box(
-        '気配',
-        senses.map((s) => `  ${s.text}（気配：${confidenceLabel(s.internalP)}）`).join('\n'),
-      ),
-    );
-  }
-
-  // 古地図/噂枠（この階に関する記録。信頼度ラベル付き §9.1）
-  const claims = state.claims.filter((c) => c.floorDepth === floor.depth);
-  if (claims.length > 0) {
-    parts.push(
-      box(
-        '手元の記録',
-        claims
-          .map((c) => {
-            const label = `${SOURCE_NAMES[c.source]}：${confidenceLabel(c.internalP)}`;
-            const done = c.verified ? '〔検証済み〕' : '';
-            return `  ${c.text}（${label}）${done}`;
-          })
-          .join('\n'),
-      ),
-    );
-  }
-
-  // 状態枠（言葉のみ）
-  const p = state.player;
-  const stateLines = [
-    `  ${conditionWord(p.condition)}。${hungerWord(p.hunger)}。`,
-    `  ${armorWord(p.armorWear)}。${torchWord(p.torch, p.spareTorches)}。`,
-  ];
-  if (p.poisonTurns > 0) stateLines.push('  毒が回っている。');
-  const carry: string[] = [`得物は${weaponWord(p.weaponTier)}`];
-  if (p.potions > 0) carry.push(p.potions > 1 ? '薬（いくつか）' : '薬');
-  if (p.food > 0) carry.push(p.food > 1 ? '糧食（いくつか）' : '糧食');
-  if (p.hasTreasure) carry.push('井戸の底の宝');
-  stateLines.push(`  持ち物：${carry.join('、')}`);
-  parts.push(box('状態', stateLines.join('\n')));
-
-  // デバッグ枠（?debug=1 またはバッククォートでトグル。通常プレイでは一切出ない＝憲法5維持）
-  if (opts.debug) {
-    parts.push(box('DEBUG（開発者用・内部数値）', renderDebug(state)));
-  }
-
-  return parts.join('\n');
+  return {
+    title: `${character.name} B${floor.depth}F`,
+    mapHtml: renderMapHtml(state),
+    torchClass: torchClass(state.player.torch),
+    eventsHtml: renderEventsHtml(history),
+    sensesHtml: renderSensesHtml(state),
+    claimsHtml: renderClaimsHtml(state),
+    statusHtml: renderStatusHtml(state),
+    end,
+    debugText: opts.debug ? renderDebug(state) : null,
+  };
 }

@@ -17,12 +17,14 @@ import type {
   Claim,
   ClaimKind,
   DungeonInstance,
+  EnemyKind,
   Floor,
   InfoSource,
   MissPattern,
   Vec,
 } from './types';
-import { drawInternalP } from './confidence';
+import { KIND_WORD } from './character';
+import { drawCue, drawInternalP } from './confidence';
 import { generateInstance, featureAt, isConnected, isWalkable, floorCells } from './generate';
 import { resolveInfo } from './resolve';
 import type { RNG } from './rng';
@@ -148,10 +150,10 @@ function findCorridorCell(rng: RNG, floor: Floor): Vec | null {
   return null;
 }
 
-/** 階段↔階段（＋宝）の到達性を壊さずに崩落を置けるか確認して置く */
+/** 階段↔階段（＋宝箱）の到達性を壊さずに崩落を置けるか確認して置く */
 function tryPlantCollapse(floor: Floor, pos: Vec): boolean {
   const anchors = floor.features.filter(
-    (f) => f.kind === 'stairsUp' || f.kind === 'stairsDown' || f.kind === 'treasure',
+    (f) => f.kind === 'stairsUp' || f.kind === 'stairsDown' || f.kind === 'chest',
   );
   for (let i = 0; i + 1 < anchors.length; i++) {
     if (!isConnected(floor, anchors[i].pos, anchors[i + 1].pos, pos)) return false;
@@ -175,13 +177,20 @@ function collectCandidates(rng: RNG, floor: Floor): Candidate[] {
   for (const f of floor.features) {
     if (f.kind === 'spring') out.push({ kind: 'spring', pos: f.pos, featureId: f.id });
     // 生成時から空の箱は記録の対象にしない（空箱の噂は判断を生まない。空は「古い情報」の外れ方から生まれる）
-    if (f.kind === 'chest' && f.chestContent !== 'empty')
+    // 宝入りの箱は「宝の情報」として別枠で扱う
+    if (f.kind === 'chest' && f.chestContent !== 'empty' && f.chestContent !== 'treasure')
       out.push({ kind: 'chest', pos: f.pos, featureId: f.id });
-    if (f.kind === 'trap') out.push({ kind: 'trap', pos: f.pos, featureId: f.id });
-    if (f.kind === 'treasure') out.push({ kind: 'treasure', pos: f.pos, featureId: f.id });
+    if (f.kind === 'chest' && f.chestContent === 'treasure')
+      out.push({ kind: 'treasure', pos: f.pos, featureId: f.id });
   }
   for (const e of floor.entities) {
-    if (!e.dormant) out.push({ kind: 'enemy', pos: e.pos, enemyId: e.id });
+    if (e.dormant) continue;
+    // 深部の主は「宝の情報」として扱う（近寄るな、ではなく「宝は抱かれている」）
+    if (e.boss) out.push({ kind: 'treasure', pos: e.pos, enemyId: e.id });
+    else out.push({ kind: 'enemy', pos: e.pos, enemyId: e.id });
+  }
+  for (const f of floor.features) {
+    if (f.kind === 'trap') out.push({ kind: 'trap', pos: f.pos, featureId: f.id });
   }
   for (const i of floor.items) {
     if (i.kind === 'weapon' && i.pos) out.push({ kind: 'weapon', pos: i.pos, itemId: i.id });
@@ -200,6 +209,7 @@ const ALLOWED_MISS: Record<ClaimKind, MissPattern[]> = {
   treasure: ['drift'], // 宝は必ず存在する（勝利条件）。外れは位置ズレのみ
   passage: ['stale'],
   weapon: ['drift', 'condition', 'false'],
+  lore: ['misread'], // 相性の噂の外れは「別の種族と取り違えた」のみ
 };
 
 /** 箱の中身から「当たりか」を判定 */
@@ -382,6 +392,19 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
         }
       }
 
+      // 宝の情報はモードで文面が変わる（箱の中か、主が抱いているか）
+      let text: string;
+      if (cand.kind === 'treasure') {
+        const phrase = posPhrase(floor, claimedPos);
+        text =
+          instance.treasureMode === 'chest'
+            ? `B${floor.depth}F——「宝は${phrase}の箱の中だ」とある。`
+            : `B${floor.depth}F——「宝は大きなものが抱いている。${phrase}で見た」とある。`;
+        if (cand.enemyId) actualKind = 'treasureBoss';
+      } else {
+        text = claimText(source, cand.kind, posPhrase(floor, claimedPos), floor.depth, variant, carryHint);
+      }
+
       claims.push({
         id: `c${claimNo}`,
         source,
@@ -389,17 +412,71 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
         kind: cand.kind,
         floorDepth: floor.depth,
         claimedPos,
-        text: claimText(source, cand.kind, posPhrase(floor, claimedPos), floor.depth, variant, carryHint),
+        text,
+        cue: drawCue(rng, source, internalP),
         held,
         missPattern,
         actualPos,
         actualKind,
         assertedSafety: cand.kind === 'spring' || cand.kind === 'chest' ? variant : undefined,
-        // 当たりの敵情報は、動き回る敵本体の目視/撃破で検証する
-        aboutEnemyId: held && cand.kind === 'enemy' ? cand.enemyId : undefined,
+        // 動き回る敵・主についての情報は、本体の目視/撃破で検証する
+        aboutEnemyId:
+          cand.kind === 'treasure' && cand.enemyId
+            ? cand.enemyId
+            : held && cand.kind === 'enemy'
+              ? cand.enemyId
+              : undefined,
         verified: false,
       });
     }
+  }
+
+  // ---- 札の相性の噂（場所に紐付かない知識。floorDepth=0＝全域） ----
+  // 投げて確かめるまで真偽は分からない——箱・水と同じく「賭けた者だけが答えを知る」
+  const patterns = Object.keys(instance.talismanLore);
+  const loreCount = 1 + (rng.next() < 0.5 ? 1 : 0);
+  const kinds: EnemyKind[] = ['metallic', 'beast', 'shade'];
+  for (let i = 0; i < loreCount && patterns.length > 0; i++) {
+    claimNo++;
+    const pattern = pick(rng, patterns);
+    const truth = instance.talismanLore[pattern];
+    const source: InfoSource = pickWeighted(rng, [
+      ['survivorNote', 0.5],
+      ['deathNote', 0.5],
+    ] as const);
+    const internalP = drawInternalP(rng, source);
+    const resolution = resolveInfo(rng, internalP, ['misread']);
+    const held = resolution.held;
+    // 「効く」の主張か「向けるな」の警告か
+    const aspect: 'strong' | 'backfire' = rng.next() < 0.6 ? 'strong' : 'backfire';
+    let targetKind: EnemyKind = aspect === 'strong' ? truth.strongVs : truth.backfireVs;
+    if (!held) {
+      // 誤認: 別の種族の名を挙げてしまっている
+      const wrong = kinds.filter((k) => k !== targetKind);
+      targetKind = pick(rng, wrong);
+    }
+    const text =
+      aspect === 'strong'
+        ? `「${pattern}の札は${KIND_WORD[targetKind]}を退ける」と手記の端にある。`
+        : `「${pattern}の札を${KIND_WORD[targetKind]}に向けるな」と走り書きがある。`;
+    claims.push({
+      id: `c${claimNo}`,
+      source,
+      internalP,
+      kind: 'lore',
+      floorDepth: 0,
+      claimedPos: null,
+      text,
+      cue: drawCue(rng, source, internalP),
+      held,
+      missPattern: held ? undefined : 'misread',
+      actualPos: null,
+      actualKind: `lore_${pattern}_${aspect}`,
+      assertedSafety: aspect === 'strong' ? 'good' : 'bad',
+      lorePattern: pattern,
+      loreTargetKind: targetKind,
+      verified: false,
+    });
   }
 
   return claims;

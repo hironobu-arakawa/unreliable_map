@@ -10,7 +10,9 @@ import type {
   Feature,
   Floor,
   Item,
+  TalismanLore,
   Tile,
+  TreasureMode,
   Vec,
 } from './types';
 import { ENEMY_NAMES } from './character';
@@ -146,11 +148,16 @@ function takeFreeCell(floor: Floor, cells: Vec[], used: Set<string>): Vec | null
   return null;
 }
 
+/** 札の模様の候補。模様から効果は察知できない（対応はランごとにシャッフル） */
+export const TALISMAN_PATTERNS = ['渦', '三ツ目', '鱗紋'] as const;
+
 function generateFloor(
   character: DungeonCharacter,
   depth: number,
   maxDepth: number,
   rng: RNG,
+  treasureMode: TreasureMode,
+  runPatterns: string[],
 ): Floor {
   const grid: Tile[][] = [];
   for (let y = 0; y < FLOOR_H; y++) {
@@ -203,10 +210,33 @@ function generateFloor(
   if (depth < maxDepth) {
     const downPos = takeFreeCell(floor, cells, used)!;
     floor.features.push({ id: `f${depth}-down`, kind: 'stairsDown', pos: downPos });
-  } else {
-    // 最深部の宝
+  } else if (treasureMode === 'chest') {
+    // 箱型: 最深階の箱のどれかに宝が眠る（どの箱かは開けるまで分からない）
     const tPos = takeFreeCell(floor, cells, used)!;
-    floor.features.push({ id: `f${depth}-treasure`, kind: 'treasure', pos: tPos });
+    floor.features.push({
+      id: `f${depth}-treasure-chest`,
+      kind: 'chest',
+      pos: tPos,
+      chestContent: 'treasure',
+    });
+  } else {
+    // ボス型: 深部の主が宝を抱いている
+    const bPos = takeFreeCell(floor, cells, used)!;
+    const kind: EnemyKind = rng.next() < character.biases.metallicEnemyRate ? 'metallic' : 'beast';
+    floor.entities.push({
+      id: `e${depth}-boss`,
+      kind,
+      name: '深部の主',
+      pos: bPos,
+      strength: Math.min(0.95, 0.72 + rng.next() * 0.15 + (character.biases.enemyLethality - 0.5) * 0.2),
+      alive: true,
+      moveEvery: 2, // 強大だが重い——走れば距離は作れる
+      chasing: false,
+      lastSeen: null,
+      lostTurns: 0,
+      carry: 'treasure',
+      boss: true,
+    });
   }
 
   const upperness = maxDepth > 1 ? 1 - (depth - 1) / (maxDepth - 1) : 1;
@@ -240,9 +270,10 @@ function generateFloor(
     const p = takeFreeCell(floor, cells, used);
     if (!p) break;
     const content = pickWeighted(rng, [
-      ['weapon', 0.16 * (0.5 + b.rewardWeaponBias)],
-      ['potion', 0.18],
-      ['food', 0.18],
+      ['weapon', 0.14 * (0.5 + b.rewardWeaponBias)],
+      ['potion', 0.16],
+      ['food', 0.16],
+      ['talisman', 0.14],
       ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
       ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
       ['empty', 0.1],
@@ -322,6 +353,29 @@ function generateFloor(
       if (q) floor.items.push({ id: `i${depth}-food2`, kind: 'food', name: '乾いた糧食', pos: q, taken: false });
     }
   }
+  // 石: 各階に1〜2個。安全だが弱い投擲の弾
+  {
+    const stoneCount = randInt(rng, 1, 2);
+    for (let i = 0; i < stoneCount; i++) {
+      const p = takeFreeCell(floor, cells, used);
+      if (p) floor.items.push({ id: `i${depth}-stone${i}`, kind: 'stone', name: '手頃な石', pos: p, taken: false });
+    }
+  }
+  // 札: ときどき落ちている。模様はランに出る2種のどちらか
+  if (rng.next() < 0.6) {
+    const p = takeFreeCell(floor, cells, used);
+    if (p) {
+      const pattern = pick(rng, runPatterns);
+      floor.items.push({
+        id: `i${depth}-talisman`,
+        kind: 'talisman',
+        name: `${pattern}の札`,
+        pos: p,
+        taken: false,
+        pattern,
+      });
+    }
+  }
   if (rng.next() < 0.5) {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.items.push({ id: `i${depth}-potion`, kind: 'potion', name: '濁った薬', pos: p, taken: false });
@@ -342,9 +396,28 @@ function generateFloor(
 export function generateInstance(character: DungeonCharacter, runSeed: number): DungeonInstance {
   const rng = mulberry32(hashSeed(runSeed, 'gen'));
   const maxDepth = 3 + Math.floor(rng.next() * 3); // 3〜5階層（§11）
+
+  // 宝の出所: 箱の中か、主が抱いているか（ランごとにシードで決まる）
+  const treasureMode: TreasureMode = rng.next() < 0.5 ? 'chest' : 'boss';
+
+  // 札の模様→効果の対応をシャッフル（模様から属性は察知できない）
+  const kinds: EnemyKind[] = shuffle(rng, ['metallic', 'beast', 'shade'] as const);
+  const runPatterns = shuffle(rng, TALISMAN_PATTERNS).slice(0, 2);
+  const talismanLore: TalismanLore = {};
+  for (let i = 0; i < runPatterns.length; i++) {
+    // 効く相手と逆効く相手は必ず別の種族
+    talismanLore[runPatterns[i]] = {
+      strongVs: kinds[i % kinds.length],
+      backfireVs: kinds[(i + 1 + Math.floor(rng.next() * 2)) % kinds.length],
+    };
+    if (talismanLore[runPatterns[i]].backfireVs === talismanLore[runPatterns[i]].strongVs) {
+      talismanLore[runPatterns[i]].backfireVs = kinds[(i + 1) % kinds.length];
+    }
+  }
+
   const floors: Floor[] = [];
   for (let d = 1; d <= maxDepth; d++) {
-    floors.push(generateFloor(character, d, maxDepth, rng));
+    floors.push(generateFloor(character, d, maxDepth, rng, treasureMode, runPatterns));
   }
-  return { character, runSeed, floors };
+  return { character, runSeed, floors, treasureMode, talismanLore };
 }

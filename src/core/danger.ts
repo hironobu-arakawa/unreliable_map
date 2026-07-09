@@ -91,6 +91,25 @@ export function assessDanger(
     factors.push('毒が回っている');
   }
 
+  // 光と種族: 獣は火を恐れ、影は闇の中で濃くなる（金属は光に無頓着）
+  const lit = player.torch > 60;
+  const dark = player.torch <= 0 && player.spareTorches <= 0;
+  if (enemy.kind === 'beast') {
+    if (lit) {
+      risk -= 0.06;
+      factors.push('獣は松明の火を嫌がっている');
+    } else if (dark) {
+      risk += 0.06;
+    }
+  } else if (enemy.kind === 'shade') {
+    if (dark) {
+      risk += 0.1;
+      factors.push('影は闇の中で濃くなっている');
+    } else if (lit) {
+      risk -= 0.04;
+    }
+  }
+
   const internalRisk = clamp01(risk);
   return { internalRisk, label: dangerLabel(internalRisk), factors };
 }

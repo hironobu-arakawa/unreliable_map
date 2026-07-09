@@ -144,6 +144,7 @@ type RunResult = {
   deepest: number;
   turns: number;
   combatDeath: boolean;
+  mode: 'chest' | 'boss';
 };
 
 function run(seed: number, brain: Brain): RunResult {
@@ -174,6 +175,39 @@ function run(seed: number, brain: Brain): RunResult {
       // （逃げ続けても敵は消えない。消耗との天秤で「上位ラベルのみ回避」が上手いプレイ）
       const label = state.pending!.assessment.label;
       const tooRisky = label === 'かなり危険' || label === '死の気配';
+      // 上位ラベル相手には、まず一投で危険度を下げにいく
+      if (tooRisky && !state.pending!.thrown) {
+        if (brain === 'reader') {
+          // 効くと「知っている」か「噂がある」札だけ投げる（無情報の札は逆効きの賭け）
+          const enemy = floor.entities.find((e) => e.id === state.pending!.enemyId)!;
+          let chosenPattern: string | undefined;
+          for (const [pattern, count] of Object.entries(p.talismans)) {
+            if (count <= 0) continue;
+            const known = state.talismanKnowledge[pattern]?.[enemy.kind];
+            if (known === 'strong') {
+              chosenPattern = pattern;
+              break;
+            }
+            if (known) continue; // 並・逆効きと知っているなら投げない
+            const rumor = state.claims.find(
+              (c) =>
+                !c.verified &&
+                c.kind === 'lore' &&
+                c.lorePattern === pattern &&
+                c.loreTargetKind === enemy.kind,
+            );
+            if (rumor?.assertedSafety === 'good') chosenPattern = pattern; // 噂を信じる
+          }
+          if (chosenPattern) {
+            step(state, { type: 'throwTalisman', pattern: chosenPattern });
+            continue;
+          }
+        }
+        if (p.stones > 0) {
+          step(state, { type: 'throwStone' });
+          continue;
+        }
+      }
       const cornered = consecutiveRetreats >= 3;
       if (!tooRisky || cornered) {
         step(state, { type: 'engage' });
@@ -381,6 +415,7 @@ function run(seed: number, brain: Brain): RunResult {
     deepest: state.deepestVisited,
     turns: state.turn,
     combatDeath: state.phase === 'dead' && lastDanger?.outcome === 'death',
+    mode: state.instance.treasureMode,
   };
 }
 
@@ -397,6 +432,7 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
   let turns = 0;
   let combatDeaths = 0;
   let deaths = 0;
+  const byMode = { chest: { n: 0, treasure: 0 }, boss: { n: 0, treasure: 0 } };
   for (let s = 0; s < N; s++) {
     const r = run(hashSeed('skill-exp', s), brain);
     if (r.survived) survived++;
@@ -405,6 +441,8 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
     deepest += r.deepest;
     turns += r.turns;
     if (r.combatDeath) combatDeaths++;
+    byMode[r.mode].n++;
+    if (r.treasure) byMode[r.mode].treasure++;
   }
   console.log(
     `${brain.padEnd(7)} | ${((survived / N) * 100).toFixed(1).padStart(5)}% | ${(
@@ -413,7 +451,9 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
       .toFixed(1)
       .padStart(8)}% | ${(deepest / N).toFixed(2).padStart(9)} | ${(turns / N)
       .toFixed(0)
-      .padStart(9)} | ${combatDeaths}/${deaths}`,
+      .padStart(9)} | ${combatDeaths}/${deaths}` +
+      ` | 宝: 箱型${((byMode.chest.treasure / Math.max(1, byMode.chest.n)) * 100).toFixed(0)}%` +
+      `/ボス型${((byMode.boss.treasure / Math.max(1, byMode.boss.n)) * 100).toFixed(0)}%`,
   );
 }
 console.log(

@@ -58,9 +58,9 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
     const claims = applyHearsay(inst, seed);
 
     for (const floor of inst.floors) {
-      // 崩落を植えても階段↔階段（↔宝）の到達性が保たれている
+      // 崩落を植えても階段↔階段（↔宝箱）の到達性が保たれている
       const anchors = floor.features.filter(
-        (f) => f.kind === 'stairsUp' || f.kind === 'stairsDown' || f.kind === 'treasure',
+        (f) => f.kind === 'stairsUp' || f.kind === 'stairsDown' || f.kind === 'chest',
       );
       for (let i = 0; i + 1 < anchors.length; i++) {
         if (!isConnected(floor, anchors[i].pos, anchors[i + 1].pos)) disconnected++;
@@ -68,6 +68,16 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
     }
 
     for (const c of claims) {
+      // 相性の噂: 当たりなら真実と一致し、誤認なら一致しないはず
+      if (c.kind === 'lore') {
+        if (c.lorePattern && c.loreTargetKind) {
+          const truth = inst.talismanLore[c.lorePattern];
+          const asserted = c.assertedSafety === 'good' ? truth?.strongVs : truth?.backfireVs;
+          const matches = asserted === c.loreTargetKind;
+          if (c.held !== matches) holdMismatch++;
+        }
+        continue;
+      }
       const floor = inst.floors[c.floorDepth - 1];
       if (c.held && c.actualPos) {
         // 当たりの情報は、実態にそのまま一致するはず（安全性の主張まで含めて）
@@ -81,7 +91,9 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
             (c.assertedSafety === 'good') ===
               ['weapon', 'potion', 'food'].includes(f.chestContent ?? '')) ||
           (c.kind === 'trap' && f?.kind === 'trap' && !f?.triggered) ||
-          (c.kind === 'treasure' && f?.kind === 'treasure') ||
+          (c.kind === 'treasure' &&
+            ((f?.kind === 'chest' && f.chestContent === 'treasure') ||
+              floor.entities.some((e) => e.boss && e.alive && e.pos.x === c.actualPos!.x && e.pos.y === c.actualPos!.y))) ||
           (c.kind === 'enemy' && enemyAt(floor, c.actualPos) !== undefined) ||
           (c.kind === 'weapon' && itemAt(floor, c.actualPos)?.kind === 'weapon' && !itemAt(floor, c.actualPos)?.broken) ||
           (c.kind === 'passage' && f === undefined);
@@ -158,8 +170,15 @@ function autoplay(seed: number): BotResult {
     let chosen: Action | undefined;
 
     if (state.phase === 'encounter') {
-      // わざとランダム寄りに挑む（ラベル別の実リスク計測のため）
-      chosen = bot.next() < 0.6 ? { type: 'engage' } : { type: 'retreat' };
+      // ときどき投げ、あとはランダム寄りに挑む（ラベル別の実リスク計測のため）
+      const throwable = actions.filter(
+        (a) => a.type === 'throwStone' || a.type === 'throwTalisman',
+      );
+      if (throwable.length > 0 && bot.next() < 0.3) {
+        chosen = throwable[Math.floor(bot.next() * throwable.length)];
+      } else {
+        chosen = bot.next() < 0.6 ? { type: 'engage' } : { type: 'retreat' };
+      }
     } else {
       const p = state.player;
       const here = actions;

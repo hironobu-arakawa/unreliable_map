@@ -8,9 +8,12 @@ import type {
   Floor,
   PlayerState,
   Vec,
+  WeaponTier,
 } from './types';
 import type { DungeonCharacter } from './types';
-import { confidenceLabel, drawInternalP, SOURCE_NAMES } from './confidence';
+import { KIND_WORD } from './character';
+import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
+export { KIND_WORD };
 import { assessDanger, type DangerAssessment } from './danger';
 import { enemyAt, featureAt, generateInstance, isWalkable, itemAt, tileAt } from './generate';
 import { applyHearsay } from './hearsay';
@@ -108,7 +111,10 @@ export type PendingEncounter = {
   assessment: DangerAssessment;
   /** 判断材料スナップショット（死亡ログ用 §10） */
   materials: string[];
+  /** 先制の一投を使ったか（距離があるうちの一投は一度だけ） */
+  thrown: boolean;
 };
+
 
 export type GameState = {
   instance: DungeonInstance;
@@ -132,6 +138,11 @@ export type GameState = {
   rng: RNG; // プレイ時の判定用（runSeed由来。同じ行動列なら同じ結果）
   deepestVisited: number;
   senseSeq: number;
+  /**
+   * 札の目撃知識: 自分で投げて見た効果は確定（憲法2）。
+   * 模様→種族→'strong'|'backfire'|'neutral'
+   */
+  talismanKnowledge: Record<string, Record<string, 'strong' | 'backfire' | 'neutral'>>;
 };
 
 export type Action =
@@ -147,7 +158,9 @@ export type Action =
   | { type: 'open' } // 宝箱を開ける（不可逆な賭け）
   | { type: 'inspect' } // 調べる: 箱・泉の安全性について気配帯の情報を自力生成する
   | { type: 'engage' }
-  | { type: 'retreat' };
+  | { type: 'retreat' }
+  | { type: 'throwStone' } // 距離があるうちの一投（安全だが弱い）
+  | { type: 'throwTalisman'; pattern: string }; // 札の賭け（相性は投げるまで分からない）
 
 const key = (p: Vec) => `${p.x},${p.y}`;
 
@@ -157,10 +170,47 @@ export function currentFloor(state: GameState): Floor {
 
 // ---- 生成 ----
 
-export function newGame(character: DungeonCharacter, runSeed: number): GameState {
+/**
+ * 出発時の装備。生還すれば持ち出した品が次の潜行の支度になる（死ねば失う）。
+ * 持ち越した札の模様は残るが、模様→効果の理は編み直される（talismanLoreはランごと）
+ */
+export type StartKit = {
+  potions: number;
+  food: number;
+  stones: number;
+  spareTorches: number;
+  weaponTier: WeaponTier;
+  talismans: Record<string, number>;
+};
+
+/** 組合が保証する最低限の支度。持ち越しがこれを下回っても詰まない（死の連鎖を断つ） */
+export const BASE_KIT: StartKit = {
+  potions: 1,
+  food: 2,
+  stones: 2,
+  spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
+  weaponTier: 1, // 傷んだ短剣。丸腰で潜る冒険者はいない
+  talismans: {},
+};
+
+/** 項目ごとに組合の標準と持ち越しの多い方を採る */
+function mergeKit(kit?: StartKit): StartKit {
+  if (!kit) return { ...BASE_KIT, talismans: {} };
+  return {
+    potions: Math.max(BASE_KIT.potions, kit.potions),
+    food: Math.max(BASE_KIT.food, kit.food),
+    stones: Math.max(BASE_KIT.stones, kit.stones),
+    spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
+    weaponTier: Math.max(BASE_KIT.weaponTier, kit.weaponTier) as WeaponTier,
+    talismans: { ...kit.talismans },
+  };
+}
+
+export function newGame(character: DungeonCharacter, runSeed: number, kit?: StartKit): GameState {
   // 生成パイプライン: 地形 → 古地図・噂の解決（地形の最終化を含む）。以後、地形は不変
   const instance = generateInstance(character, runSeed);
   const claims = applyHearsay(instance, runSeed);
+  const k = mergeKit(kit);
 
   const entry = instance.floors[0].features.find((f) => f.kind === 'stairsUp')!;
   const state: GameState = {
@@ -171,12 +221,14 @@ export function newGame(character: DungeonCharacter, runSeed: number): GameState
       hunger: 10,
       armorWear: 10,
       torch: 100,
-      spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
+      spareTorches: k.spareTorches,
       poisonTurns: 0,
-      weaponTier: 1, // 傷んだ短剣。丸腰で潜る冒険者はいない
+      weaponTier: k.weaponTier,
       hasTreasure: false,
-      potions: 1,
-      food: 2,
+      potions: k.potions,
+      food: k.food,
+      stones: k.stones,
+      talismans: k.talismans,
       ownLog: [],
     },
     floorIndex: 0,
@@ -194,12 +246,13 @@ export function newGame(character: DungeonCharacter, runSeed: number): GameState
     rng: mulberry32(hashSeed(runSeed, 'play')),
     deepestVisited: 1,
     senseSeq: 0,
+    talismanKnowledge: {},
   };
 
   state.knowledge[0].walked.add(key(state.pos));
   const events: string[] = [
     `あなたは「${character.name}」の入口に立っている。`,
-    ...character.traitRumors.map((r) => `${r}（噂：${confidenceLabel(0.35)}）`),
+    ...character.traitRumors.map((r) => `${r}（——酒場で聞いた話だ）`),
   ];
   look(state, events);
   state.events = events;
@@ -263,10 +316,10 @@ function chestGood(actualKind: string): boolean {
   return ['chest_weapon', 'chest_potion', 'chest_food'].includes(actualKind);
 }
 
-/** 検証時の対応文（なぜ外れたかが必ず言葉で残る。憲法4） */
+/** 検証時の対応文（なぜ外れたかが必ず言葉で残る。憲法4）。
+ *  手がかり〈字の乱れ等〉を添えて出す——「乱れた字はどれだけ当たるか」を体で学ばせるため */
 function correspondenceText(c: Claim): string {
-  const src = sourceName(c);
-  const label = confidenceLabel(c.internalP);
+  const src = `${sourceName(c)}〈${c.cue}〉`;
   if (c.held) {
     const what: Record<string, string> = {
       spring: c.actualKind === 'badSpring' ? '警告どおり、水は悪かった' : '記されたとおり、水は澄んでいた',
@@ -281,44 +334,48 @@ function correspondenceText(c: Claim): string {
       treasure: '宝の在り処は正しかった',
       passage: '道は今も通じていた',
       weapon: '得物は残されていた',
+      lore: '札についての記述は正しかった',
     };
-    return `（${src}・${label}：当たり——${what[c.kind]}）`;
+    return `（${src}：当たり——${what[c.kind]}）`;
   }
   switch (c.missPattern) {
     case 'drift':
-      return `（${src}・${label}：位置が少しズレていた）`;
+      return `（${src}：位置が少しズレていた）`;
     case 'condition':
       if (c.kind === 'spring') {
         return c.actualKind === 'badSpring'
-          ? `（${src}・${label}：泉はあった。だが水は悪くなっていた——内容は合うが条件が違う）`
-          : `（${src}・${label}：泉はあった。だが涸れていた——内容は合うが条件が違う）`;
+          ? `（${src}：泉はあった。だが水は悪くなっていた——内容は合うが条件が違う）`
+          : `（${src}：泉はあった。だが涸れていた——内容は合うが条件が違う）`;
       }
-      return `（${src}・${label}：得物はあった。だが朽ちていた——内容は合うが条件が違う）`;
+      return `（${src}：得物はあった。だが朽ちていた——内容は合うが条件が違う）`;
     case 'stale':
-      if (c.kind === 'chest') return `（${src}・${label}：その記録は古い——箱は先に漁られていた）`;
+      if (c.kind === 'chest') return `（${src}：その記録は古い——箱は先に漁られていた）`;
       return c.kind === 'passage'
-        ? `（${src}・${label}：その記録は古い——道は崩れていた）`
-        : `（${src}・${label}：その記録は古い——仕掛けはとうに朽ちていた）`;
+        ? `（${src}：その記録は古い——道は崩れていた）`
+        : `（${src}：その記録は古い——仕掛けはとうに朽ちていた）`;
     case 'misread':
       if (c.kind === 'chest') {
         // 文面の主張を基準に「どう外れたか」を語る（憲法4）
         return c.assertedSafety === 'bad'
-          ? `（${src}・${label}：慎重すぎる警告だった——箱に牙はなかった）`
-          : `（${src}・${label}：誤認だ——当たりのはずの箱に、牙があった）`;
+          ? `（${src}：慎重すぎる警告だった——箱に牙はなかった）`
+          : `（${src}：誤認だ——当たりのはずの箱に、牙があった）`;
       }
       if (c.kind === 'spring') {
         return c.assertedSafety === 'bad'
-          ? `（${src}・${label}：見立て違いだ——水はただ澄んでいた）`
-          : `（${src}・${label}：見立て違いだ——水は悪かった）`;
+          ? `（${src}：見立て違いだ——水はただ澄んでいた）`
+          : `（${src}：見立て違いだ——水は悪かった）`;
+      }
+      if (c.kind === 'lore') {
+        return `（${src}：その手記は誤りだった——札はそうは働かなかった）`;
       }
       if (c.actualKind === 'enemy') {
-        return `（${src}・${label}：誤認だ——仕掛けの軋みではない、生きて動くものだった）`;
+        return `（${src}：誤認だ——仕掛けの軋みではない、生きて動くものだった）`;
       }
-      return `（${src}・${label}：誰かの誤認だ——音の主は罠だった）`;
+      return `（${src}：誰かの誤認だ——音の主は罠だった）`;
     case 'false':
-      return `（${src}・${label}：そこには何もなかった）`;
+      return `（${src}：そこには何もなかった）`;
     default:
-      return `（${src}・${label}：外れ）`;
+      return `（${src}：外れ）`;
   }
 }
 
@@ -346,7 +403,7 @@ function verifyDecisionClaimsAt(state: GameState, pos: Vec, events: string[]): v
   const depth = currentFloor(state).depth;
   for (const c of [...state.claims, ...state.senses]) {
     if (c.verified || c.floorDepth !== depth) continue;
-    if (c.kind !== 'chest' && c.kind !== 'spring') continue;
+    if (c.kind !== 'chest' && c.kind !== 'spring' && c.kind !== 'treasure') continue;
     if (!c.actualPos || c.actualPos.x !== pos.x || c.actualPos.y !== pos.y) continue;
     settleClaim(state, c, events);
   }
@@ -365,6 +422,7 @@ function verifyClaims(state: GameState, events: string[]): void {
     // 位置ズレは両方見えて初めて「ズレていた」と分かる。誤情報は主張位置を見て「何もない」と分かる。
     // 動く敵についての情報は、位置ではなく敵本体を見た（or倒した）時点で判明
     let ready = false;
+    if (c.kind === 'lore') continue; // 相性の噂は「その札をその相手に投げた」時にだけ判明する
     if (c.aboutEnemyId) {
       const enemy = floor.entities.find((e) => e.id === c.aboutEnemyId);
       ready = !!enemy && (!enemy.alive || state.visibleNow.has(key(enemy.pos)));
@@ -399,13 +457,13 @@ export function currentMaterials(state: GameState): string[] {
   if (p.poisonTurns > 0) out.push('毒が回っている');
   const depth = currentFloor(state).depth;
   for (const c of state.claims) {
-    if (c.floorDepth === depth && !c.verified) {
-      out.push(`${c.text}（${sourceName(c)}：${confidenceLabel(c.internalP)}）`);
+    if ((c.floorDepth === depth || c.floorDepth === 0) && !c.verified) {
+      out.push(`${c.text}（${sourceName(c)}——${c.cue}）`);
     }
   }
   for (const s of state.senses) {
     if (s.floorDepth === depth && !s.verified) {
-      out.push(`${s.text}（気配：${confidenceLabel(s.internalP)}）`);
+      out.push(`${s.text}（気配——${s.cue}）`);
     }
   }
   return out;
@@ -490,7 +548,15 @@ function escape(state: GameState, events: string[]): void {
 export function availableActions(state: GameState): Action[] {
   if (state.phase === 'dead' || state.phase === 'escaped') return [];
   if (state.phase === 'encounter') {
-    return [{ type: 'engage' }, { type: 'retreat' }];
+    const actions: Action[] = [{ type: 'engage' }, { type: 'retreat' }];
+    // 距離があるうちの一投（一度だけ）。石は安全な削り、札は相性の賭け
+    if (!state.pending!.thrown) {
+      if (state.player.stones > 0) actions.push({ type: 'throwStone' });
+      for (const [pattern, count] of Object.entries(state.player.talismans)) {
+        if (count > 0) actions.push({ type: 'throwTalisman', pattern });
+      }
+    }
+    return actions;
   }
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
@@ -633,6 +699,7 @@ function processEnemies(state: GameState, events: string[], holdId?: string): vo
       const next = enemyStepToward(floor, e.pos, e.lastSeen);
       if (next && !(next.x === state.pos.x && next.y === state.pos.y)) {
         e.pos = next;
+        enemyStepsOnTrap(state, e, events);
       }
     } else {
       // 徘徊: 気まぐれに1歩
@@ -643,9 +710,28 @@ function processEnemies(state: GameState, events: string[], holdId?: string): vo
             !enemyAt(floor, p) &&
             !(p.x === state.pos.x && p.y === state.pos.y),
         );
-        if (options.length > 0) e.pos = pick(state.rng, options);
+        if (options.length > 0) {
+          e.pos = pick(state.rng, options);
+          enemyStepsOnTrap(state, e, events);
+        }
       }
     }
+  }
+}
+
+/** 敵も罠を踏む——追われているなら、知っている罠の上を走って誘い込める */
+function enemyStepsOnTrap(state: GameState, e: Entity, events: string[]): void {
+  const floor = currentFloor(state);
+  const trap = featureAt(floor, e.pos);
+  if (!trap || trap.kind !== 'trap' || trap.triggered) return;
+  trap.triggered = true;
+  e.strength = Math.max(0.05, e.strength - (0.2 + state.rng.next() * 0.15));
+  const audible = chebDist(e.pos, state.pos) <= 6;
+  if (e.strength <= 0.12) {
+    e.alive = false;
+    if (audible) events.push('仕掛けの跳ねる音、短い悲鳴——それきり、動く音はしない。');
+  } else if (audible) {
+    events.push('仕掛けの跳ねる音と、何かの呻きが聞こえた。');
   }
 }
 
@@ -666,10 +752,77 @@ function startEncounter(state: GameState, enemy: Entity, events: string[], lead?
     ...currentMaterials(state),
   ];
   if (assessment.factors.length > 0) {
-    events.push(`不安がよぎる——${assessment.factors.join('。')}。`);
+    events.push(`見て取れること——${assessment.factors.join('。')}。`);
   }
-  state.pending = { enemyId: enemy.id, assessment, materials };
+  state.pending = { enemyId: enemy.id, assessment, materials, thrown: false };
   state.phase = 'encounter';
+}
+
+/** 先制の一投（§10: 賭けの結果は危険度ラベルの変化として即座に返す） */
+function resolveThrow(state: GameState, events: string[], pattern?: string): void {
+  const pending = state.pending!;
+  const floor = currentFloor(state);
+  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
+  const p = state.player;
+  pending.thrown = true;
+
+  if (!pattern) {
+    p.stones--;
+    enemy.strength = Math.max(0.05, enemy.strength - (0.08 + state.rng.next() * 0.06));
+    events.push(`石を投げつけた。${enemy.name}は一瞬ひるんだ。`);
+  } else {
+    p.talismans[pattern]--;
+    const lore = state.instance.talismanLore[pattern];
+    let effect: 'strong' | 'backfire' | 'neutral' = 'neutral';
+    if (lore?.strongVs === enemy.kind) effect = 'strong';
+    else if (lore?.backfireVs === enemy.kind) effect = 'backfire';
+
+    if (effect === 'strong') {
+      enemy.strength = Math.max(0.05, enemy.strength - (0.28 + state.rng.next() * 0.08));
+      events.push(`${pattern}の札が触れた瞬間、${enemy.name}は灼かれたように仰け反った。`);
+    } else if (effect === 'backfire') {
+      enemy.strength = Math.min(0.98, enemy.strength + (0.15 + state.rng.next() * 0.1));
+      events.push(`${pattern}の札は${enemy.name}に吸い込まれた——それは、昂っている。`);
+    } else {
+      enemy.strength = Math.max(0.05, enemy.strength - (0.05 + state.rng.next() * 0.05));
+      events.push(`${pattern}の札は爆ぜたが、石ほどの傷も残らなかった。`);
+    }
+
+    // 目撃した効果は確定の知識になる（憲法2: 自分の観測は正しい）
+    state.talismanKnowledge[pattern] = {
+      ...(state.talismanKnowledge[pattern] ?? {}),
+      [enemy.kind]: effect,
+    };
+    // この模様×この種族についての噂があれば、いま検証された
+    for (const c of state.claims) {
+      if (
+        !c.verified &&
+        c.kind === 'lore' &&
+        c.lorePattern === pattern &&
+        c.loreTargetKind === enemy.kind
+      ) {
+        settleClaim(state, c, events);
+      }
+    }
+  }
+
+  // 危険度を再評価して見せる——賭けの結果がラベルの変化として返る
+  const before = pending.assessment.label;
+  pending.assessment = assessDanger(p, enemy, state.instance.character);
+  events.push(
+    pending.assessment.label === before
+      ? `（危険度：${before}のまま）`
+      : `（危険度：${before} → ${pending.assessment.label}）`,
+  );
+
+  // 投げた隙に踏み込まれることがある
+  if (state.rng.next() < pending.assessment.internalRisk * 0.2) {
+    p.condition -= 5 + Math.floor(state.rng.next() * 7);
+    events.push('投げた隙に、爪が掠めた。');
+    if (p.condition <= 0) {
+      die(state, events, '投げた隙を突かれた。それが最後だった。');
+    }
+  }
 }
 
 /** 倒した敵の持ち物を必ず得る（挑む動機。何を持っているかは気配・記録が事前に匂わせる） */
@@ -692,6 +845,10 @@ function lootCarry(state: GameState, enemy: Entity, events: string[]): void {
     case 'food':
       p.food++;
       events.push('奴が漁っていた糧袋を回収した。まだ食える。');
+      break;
+    case 'treasure':
+      p.hasTreasure = true;
+      events.push('骸の腕の中から、布に包まれた重みを取り上げた。宝だ。あとは、生きて帰るだけだ。');
       break;
     case 'none':
       break;
@@ -898,6 +1055,12 @@ function stepOnTile(state: GameState, events: string[]): void {
     } else if (item.kind === 'potion') {
       p.potions++;
       events.push('濁った薬瓶を拾った。中身は振ってみても分からない。');
+    } else if (item.kind === 'stone') {
+      p.stones++;
+      events.push('手頃な石を拾った。投げるにはちょうどいい。');
+    } else if (item.kind === 'talisman' && item.pattern) {
+      p.talismans[item.pattern] = (p.talismans[item.pattern] ?? 0) + 1;
+      events.push(`${item.pattern}の札が落ちている。模様の意味までは読めない。`);
     } else if (item.kind === 'weapon') {
       if (item.broken) {
         events.push('剣だ——だが手に取ると、刃は錆びて根元から折れた。使い物にならない。');
@@ -1025,6 +1188,7 @@ function doListen(state: GameState, events: string[]): void {
     }
 
     state.senseSeq++;
+    const cue = drawCue(state.rng, 'sense', internalP);
     state.senses.push({
       id: `s${state.senseSeq}`,
       source: 'sense',
@@ -1033,6 +1197,7 @@ function doListen(state: GameState, events: string[]): void {
       floorDepth: floor.depth,
       claimedPos: t.pos,
       text,
+      cue,
       held,
       missPattern,
       actualPos: t.pos,
@@ -1040,7 +1205,7 @@ function doListen(state: GameState, events: string[]): void {
       aboutEnemyId: t.enemyId, // 敵は動くため、位置ではなく本体で検証する
       verified: false,
     });
-    events.push(`${text}（気配：${confidenceLabel(internalP)}）`);
+    events.push(`${text}（気配——${cue}）`);
   }
 
   advanceTurn(state, events, 0.6, 0.8);
@@ -1099,6 +1264,17 @@ function doOpen(state: GameState, events: string[]): void {
     case 'food':
       p.food++;
       events.push('箱の中に蝋引きの包み——糧食だ。当たりだ。');
+      break;
+    case 'talisman': {
+      const patterns = Object.keys(state.instance.talismanLore);
+      const pattern = pick(state.rng, patterns);
+      p.talismans[pattern] = (p.talismans[pattern] ?? 0) + 1;
+      events.push(`箱の中に${pattern}の札が収められていた。模様の意味までは読めない。`);
+      break;
+    }
+    case 'treasure':
+      p.hasTreasure = true;
+      events.push('布に包まれた重み——宝だ。この箱だったのか。あとは、生きて帰るだけだ。');
       break;
     case 'needle':
       p.condition -= 14;
@@ -1170,6 +1346,7 @@ function doInspect(state: GameState, events: string[]): void {
       : 'かすかに苦い匂いが鼻をつく。';
 
   state.senseSeq++;
+  const cue = drawCue(state.rng, 'sense', internalP);
   state.senses.push({
     id: `s${state.senseSeq}`,
     source: 'sense',
@@ -1178,6 +1355,7 @@ function doInspect(state: GameState, events: string[]): void {
     floorDepth: floor.depth,
     claimedPos: { ...state.pos },
     text,
+    cue,
     held: resolution.held,
     missPattern: resolution.held ? undefined : resolution.missPattern,
     actualPos: { ...state.pos },
@@ -1185,7 +1363,7 @@ function doInspect(state: GameState, events: string[]): void {
     assertedSafety: reportedSafe ? 'good' : 'bad',
     verified: false,
   });
-  events.push(`${text}（見立て：${confidenceLabel(internalP)}）`);
+  events.push(`${text}（見立て——${cue}）`);
   advanceTurn(state, events, 0.5, 0.5);
 }
 
@@ -1285,6 +1463,8 @@ export function step(state: GameState, action: Action): string[] {
   if (state.phase === 'encounter') {
     if (action.type === 'engage') resolveEngage(state, events);
     else if (action.type === 'retreat') resolveRetreat(state, events);
+    else if (action.type === 'throwStone') resolveThrow(state, events);
+    else if (action.type === 'throwTalisman') resolveThrow(state, events, action.pattern);
     state.events = events;
     return events;
   }

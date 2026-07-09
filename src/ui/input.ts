@@ -16,6 +16,7 @@ const ACTION_LABELS: Record<string, string> = {
   inspect: '調べる',
   engage: '挑む',
   retreat: '退く',
+  throwStone: '石を投げる',
 };
 
 const DIR_LABELS: Record<string, string> = {
@@ -27,6 +28,7 @@ const DIR_LABELS: Record<string, string> = {
 
 export function actionLabel(a: Action): string {
   if (a.type === 'move') return DIR_LABELS[a.dir];
+  if (a.type === 'throwTalisman') return `${a.pattern}の札を投げる`;
   return ACTION_LABELS[a.type] ?? a.type;
 }
 
@@ -40,20 +42,25 @@ export function renderActions(
   const actions = availableActions(state);
   actions.forEach((a, i) => {
     const btn = document.createElement('button');
-    const hotkey = i < 9 ? `${i + 1}` : '';
-    btn.textContent = hotkey ? `${hotkey}. ${actionLabel(a)}` : actionLabel(a);
+    if (i < 9) {
+      const kbd = document.createElement('kbd');
+      kbd.textContent = `${i + 1}`;
+      btn.appendChild(kbd);
+    }
+    btn.appendChild(document.createTextNode(actionLabel(a)));
     btn.addEventListener('click', () => onAction(a));
     container.appendChild(btn);
   });
 }
 
-/** キーボード入力（矢印=移動、数字=ボタン順） */
+/** キーボード入力（矢印=移動、数字=ボタン順）。台帳画面では state が無い */
 export function bindKeyboard(
-  getState: () => GameState,
+  getState: () => GameState | null,
   onAction: (a: Action) => void,
 ): void {
   window.addEventListener('keydown', (ev) => {
     const state = getState();
+    if (!state) return;
     const actions = availableActions(state);
     if (actions.length === 0) return;
 
