@@ -21,6 +21,7 @@ export function baseKitClone(): StartKit {
     food: BASE_KIT.food,
     stones: BASE_KIT.stones,
     spareTorches: BASE_KIT.spareTorches,
+    fireOil: BASE_KIT.fireOil,
     weapons: BASE_KIT.weapons.map((w) => ({ ...w })),
     armor: BASE_KIT.armor ? { ...BASE_KIT.armor } : null,
     talismans: {},
@@ -97,6 +98,15 @@ export const SHOP_ITEMS: ShopItem[] = [
     },
   },
   {
+    id: 'fireOil',
+    label: '火油の瓶',
+    price: 20,
+    note: '金物も獣も影も、よく焼ける。だが逃げ場のない場所で使えば、己も焼く。',
+    apply(kit) {
+      kit.fireOil = (kit.fireOil ?? 0) + 1;
+    },
+  },
+  {
     id: 'sword',
     label: '剣',
     price: 30,
@@ -130,6 +140,15 @@ export const SHOP_ITEMS: ShopItem[] = [
     note: '重いが、爪も牙もよく止める。',
     apply(kit) {
       kit.armor = { kind: 'chain', wear: 10 };
+    },
+  },
+  {
+    id: 'fine',
+    label: '業物の剣',
+    price: 100,
+    note: '帳場の奥から出てくる逸品。一生ものだ——生きていれば。',
+    apply(kit) {
+      kit.weapons.push({ kind: 'fine', wear: 5 });
     },
   },
 ];

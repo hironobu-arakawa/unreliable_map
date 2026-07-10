@@ -8,6 +8,7 @@ import type { ArmorGear, ArmorKind, WeaponGear, WeaponKind } from './types';
 export const WEAPON_DATA: Record<WeaponKind, { name: string; power: number }> = {
   dagger: { name: '短剣', power: 0.16 },
   sword: { name: '剣', power: 0.26 },
+  fine: { name: '業物の剣', power: 0.33 }, // 帳場でしか手に入らない長期目標
 };
 
 export const ARMOR_DATA: Record<ArmorKind, { name: string; guard: number }> = {

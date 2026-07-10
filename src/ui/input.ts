@@ -6,6 +6,9 @@ import { availableActions, POTION_NAMES, type Action, type GameState } from '../
 const ACTION_LABELS: Record<string, string> = {
   listen: '耳を澄ます',
   rest: '休む',
+  checkPack: '荷を検める',
+  steal: '眠る相手の懐を探る',
+  throwFireOil: '火油の瓶を投げる',
   descend: '階段を降りる',
   ascend: '階段を上る',
   escape: '地上へ脱出する',

@@ -249,7 +249,7 @@ export type Claim = {
 
 // ---- 装備（アイテムとしての武器・防具） ----
 
-export type WeaponKind = 'dagger' | 'sword';
+export type WeaponKind = 'dagger' | 'sword' | 'fine';
 export type ArmorKind = 'leather' | 'chain';
 
 /** 得物。傷み（wear）は打ち合いで進み、100で折れる */
@@ -272,6 +272,8 @@ export type PlayerState = {
   /** 着ている鎧。null なら身を守るものがない */
   armor: ArmorGear | null;
   hasTreasure: boolean; // 最深部の宝
+  /** 火油の瓶。種族を問わず大きく削るが、逃げ場のない場所で使えば自分も焼く */
+  fireOil: number;
   /** 拾った宝石（種類→個数）。生還すれば帳場で銀貨になる。死ねば失う */
   gems: Record<string, number>;
   potions: Record<string, number>; // 薬の種類→本数（キーは PotionKind）

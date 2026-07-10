@@ -109,6 +109,7 @@ export function kitFromPlayer(p: PlayerState): StartKit {
     food: p.food,
     stones: p.stones,
     spareTorches: p.spareTorches,
+    fireOil: p.fireOil,
     weapons: p.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w })),
     armor: p.armor ? { ...p.armor } : null,
     talismans,
@@ -125,6 +126,7 @@ export function describeKit(kit: StartKit): string {
   }
   if (kit.food > 0) parts.push(`糧食×${kit.food}`);
   if (kit.stones > 0) parts.push(`石×${kit.stones}`);
+  if ((kit.fireOil ?? 0) > 0) parts.push(`火油の瓶×${kit.fireOil}`);
   if (kit.spareTorches > 0) parts.push(`予備の松明×${kit.spareTorches}`);
   for (const [pattern, count] of Object.entries(kit.talismans)) {
     parts.push(`${pattern}の札×${count}`);

@@ -163,7 +163,7 @@ function run(seed: number, brain: Brain): RunResult {
     const floor = currentFloor(state);
     const know = state.knowledge[state.floorIndex];
     const p = state.player;
-    const giveUp = state.turn > 250;
+    const giveUp = state.turn > 320; // 4〜6階層に合わせて粘る
 
     // ---- 遭遇 ----
     if (state.phase === 'encounter') {

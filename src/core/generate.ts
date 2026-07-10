@@ -435,7 +435,8 @@ function generateFloor(
  */
 export function generateInstance(character: DungeonCharacter, runSeed: number): DungeonInstance {
   const rng = mulberry32(hashSeed(runSeed, 'gen'));
-  const maxDepth = 3 + Math.floor(rng.next() * 3); // 3〜5階層（§11）
+  // 4〜6階層。浅い迷宮を引き当てる運だけで装備が揃わないよう、最低階層は深め（v0.8）
+  const maxDepth = 4 + Math.floor(rng.next() * 3);
 
   // 宝の出所: 箱の中か、主が抱いているか（ランごとにシードで決まる）
   const treasureMode: TreasureMode = rng.next() < 0.5 ? 'chest' : 'boss';

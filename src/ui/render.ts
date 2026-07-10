@@ -186,9 +186,12 @@ function renderClaimsHtml(state: GameState): string {
 
 function renderStatusHtml(state: GameState): string {
   const p = state.player;
+  // 荷を検めた後は個数で書く（観測済みの事実は数字を出してよい。曖昧なのは検めるまで）
+  const n = (name: string, count: number, vague: string): string =>
+    state.counted ? `${name}×${count}` : `${name}${count > 1 ? vague : ''}`;
   const lines: string[] = [
     `<div class="line">${conditionWord(p.condition)}。${hungerWord(p.hunger)}。</div>`,
-    `<div class="line">${armorWord(p.armor)}。${torchWord(p.torch, p.spareTorches)}。</div>`,
+    `<div class="line">${armorWord(p.armor)}。${torchWord(p.torch, p.spareTorches, state.counted)}。</div>`,
   ];
   if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
   if (p.hasteTurns > 0) lines.push('<div class="line good">体が羽のように軽い。</div>');
@@ -196,10 +199,11 @@ function renderStatusHtml(state: GameState): string {
   for (const w of p.weapons.slice(1)) carry.push(`替えの${weaponWord(w)}`);
   for (const [kind, count] of Object.entries(p.potions)) {
     if (count <= 0) continue;
-    carry.push(`${POTION_NAMES[kind] ?? '薬'}${count > 1 ? '（いくつか）' : ''}`);
+    carry.push(n(POTION_NAMES[kind] ?? '薬', count, '（いくつか）'));
   }
-  if (p.food > 0) carry.push(p.food > 1 ? '糧食（いくつか）' : '糧食');
-  if (p.stones > 0) carry.push(p.stones > 1 ? '石（いくつか）' : '石');
+  if (p.food > 0) carry.push(n('糧食', p.food, '（いくつか）'));
+  if (p.stones > 0) carry.push(n('石', p.stones, '（いくつか）'));
+  if (p.fireOil > 0) carry.push(n('火油の瓶', p.fireOil, '（いくつか）'));
   for (const [pattern, count] of Object.entries(p.talismans)) {
     if (count <= 0) continue;
     // 自分で投げて見た効果は確定の知識として添える（憲法2）
@@ -212,7 +216,7 @@ function renderStatusHtml(state: GameState): string {
             : `${KIND_WORD[kind]}には並`,
       )
       .join('・');
-    carry.push(`${pattern}の札${count > 1 ? '（数枚）' : ''}${known ? `〔${known}〕` : ''}`);
+    carry.push(`${n(`${pattern}の札`, count, '（数枚）')}${known ? `〔${known}〕` : ''}`);
   }
   carry.push(...describeGems(p.gems));
   if (p.hasTreasure) carry.push('迷宮の底の宝');

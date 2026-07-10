@@ -159,9 +159,13 @@ export function fightRound(
   return { blowDamage: blow, enemyDead: false, playerHit: false, playerDamage: 0 };
 }
 
+/** 乱戦の横槍役: その敵と、プレイヤーまでの現在距離（マス数） */
+export type Approacher = { entity: Entity; distance: number };
+
 /**
  * 「最後まで打ち合った場合」の死亡・重傷率をモンテカルロで推定する。
  * 実戦と同じ fightRound を回すので、ラベルは機構の正直な射影になる（憲法6）。
+ * 近くで動いている他の敵（others）は「横合いの一撃」として同じモデルで織り込む。
  * シードは敵と状態の要約から決定論的に導出——同じ状況なら同じラベル（§4.2）。
  */
 export function estimateFightRisk(
@@ -169,8 +173,16 @@ export function estimateFightRisk(
   enemy: Entity,
   character: DungeonCharacter,
   profile?: CombatProfile,
+  others: Approacher[] = [],
 ): number {
   const prof = profile ?? combatProfile(player, enemy, character);
+  // 到着ラウンドの見積り: いまの距離ぶんだけ歩いてくる（重い敵は倍かかる）
+  const bystanders = others.map((o) => ({
+    arrival: Math.max(1, (o.distance - 1) * o.entity.moveEvery),
+    moveEvery: o.entity.moveEvery,
+    strength: o.entity.strength,
+    profile: combatProfile(player, o.entity, character),
+  }));
   const rng = mulberry32(
     hashSeed(
       'risk',
@@ -180,6 +192,8 @@ export function estimateFightRisk(
       Math.round(prof.playerPower * 1000),
       Math.round(prof.hitMod * 1000),
       Math.round(prof.dmgMod * 1000),
+      others.length,
+      ...others.map((o) => Math.round(o.entity.strength * 100) + o.distance),
     ),
   );
   const TRIALS = 120;
@@ -198,6 +212,16 @@ export function estimateFightRisk(
       if (r.playerHit) {
         condition -= r.playerDamage;
         lost += r.playerDamage;
+      }
+      // 乱戦の横槍: 届いた敵は自分の足の速さで殴ってくる
+      for (const b of bystanders) {
+        if (round + 1 < b.arrival) continue;
+        if ((round + 1 - b.arrival) % b.moveEvery !== 0) continue;
+        if (rng.next() < enemyHitChance(b.strength, b.profile)) {
+          const dmg = rollEnemyDamage(b.strength, b.profile, rng);
+          condition -= dmg;
+          lost += dmg;
+        }
       }
       if (poison > 0) {
         condition -= 3;

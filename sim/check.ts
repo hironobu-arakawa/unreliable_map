@@ -205,8 +205,8 @@ function autoplay(seed: number): BotResult {
       else if (p.hasTreasure && has('escape')) chosen = { type: 'escape' };
       else if (p.hasTreasure && has('ascend')) chosen = { type: 'ascend' };
       else if (!p.hasTreasure && has('descend') && bot.next() < 0.8) chosen = { type: 'descend' };
-      else if (state.turn > 120 && has('escape')) chosen = { type: 'escape' };
-      else if (state.turn > 120 && has('ascend') && bot.next() < 0.6) chosen = { type: 'ascend' };
+      else if (state.turn > 180 && has('escape')) chosen = { type: 'escape' };
+      else if (state.turn > 180 && has('ascend') && bot.next() < 0.6) chosen = { type: 'ascend' };
       else if (bot.next() < 0.08 && has('listen')) chosen = { type: 'listen' };
       if (!chosen) {
         const moves = here.filter((a) => a.type === 'move') as Extract<Action, { type: 'move' }>[];

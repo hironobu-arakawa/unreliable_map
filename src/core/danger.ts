@@ -6,7 +6,7 @@
 // （combat.ts の fightRound）を最後まで回した場合のモンテカルロ推定。
 // ラベルは「戦い抜いたらどうなるか」の正直な射影であり続ける（憲法6）。
 
-import { combatProfile, estimateFightRisk } from './combat';
+import { combatProfile, estimateFightRisk, type Approacher } from './combat';
 import type { DungeonCharacter, Entity, PlayerState } from './types';
 
 export type DangerLabel =
@@ -35,13 +35,19 @@ export function dangerLabel(risk: number): DangerLabel {
 /**
  * 状態依存の危険度算出。
  * 同じ敵でも「鎧が傷んでいる」「空腹」なら段が上がる（§7）。
+ * @param others 近くで動いている他の敵（乱戦の横槍として織り込まれ、ラベルを押し上げる）
  */
 export function assessDanger(
   player: PlayerState,
   enemy: Entity,
   character: DungeonCharacter,
+  others: Approacher[] = [],
 ): DangerAssessment {
   const profile = combatProfile(player, enemy, character);
-  const internalRisk = estimateFightRisk(player, enemy, character, profile);
-  return { internalRisk, label: dangerLabel(internalRisk), factors: profile.factors };
+  const internalRisk = estimateFightRisk(player, enemy, character, profile, others);
+  const factors = [...profile.factors];
+  if (others.length > 0) {
+    factors.push(others.length > 1 ? '複数の影が寄ってきている' : '別の影が近づいてきている');
+  }
+  return { internalRisk, label: dangerLabel(internalRisk), factors };
 }

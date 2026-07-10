@@ -16,7 +16,14 @@ import type {
 import type { DungeonCharacter } from './types';
 import { KIND_WORD, POTION_DROP, POTION_NAMES } from './character';
 import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
-import { combatProfile, fightRound, HEAVY_LOSS } from './combat';
+import {
+  combatProfile,
+  enemyHitChance,
+  fightRound,
+  HEAVY_LOSS,
+  rollEnemyDamage,
+  type Approacher,
+} from './combat';
 import { describeGems, GEM_DATA, rollGemKind } from './economy';
 import { addWeapon, ARMOR_DATA, armorGuard, armorWord, weaponBetter, weaponWord } from './gear';
 export { KIND_WORD, POTION_NAMES };
@@ -95,7 +102,7 @@ export function hungerWord(h: number): string {
   return '飢えている';
 }
 
-export function torchWord(torch: number, spares: number): string {
+export function torchWord(torch: number, spares: number, counted = false): string {
   const flame =
     torch > 60
       ? '松明は明るい'
@@ -104,7 +111,16 @@ export function torchWord(torch: number, spares: number): string {
         : torch > 0
           ? '松明は残り少ない'
           : '明かりが消えている';
-  const spare = spares >= 2 ? '予備はまだある' : spares === 1 ? '予備は最後の一本だ' : '予備はもうない';
+  // 荷を検めた後は、予備の本数を数えで言える（観測済みの事実）
+  const spare = counted
+    ? spares > 0
+      ? `予備はあと${spares}本`
+      : '予備はもうない'
+    : spares >= 2
+      ? '予備はまだある'
+      : spares === 1
+        ? '予備は最後の一本だ'
+        : '予備はもうない';
   return `${flame}（${spare}）`;
 }
 
@@ -163,6 +179,8 @@ export type GameState = {
    * 模様→種族→'strong'|'backfire'|'neutral'
    */
   talismanKnowledge: Record<string, Record<string, 'strong' | 'backfire' | 'neutral'>>;
+  /** 荷を検めたか。一度数えれば、以後の増減は頭に入っている（個数表示になる） */
+  counted: boolean;
 };
 
 export type Action =
@@ -179,7 +197,10 @@ export type Action =
   | { type: 'inspect' } // 調べる: 箱・泉の安全性について気配帯の情報を自力生成する
   | { type: 'engage' }
   | { type: 'retreat' }
+  | { type: 'steal' } // 眠る相手の懐を探る（しくじれば目が覚める）
+  | { type: 'checkPack' } // 荷を検める: 落ち着いて数を数える（以後、個数が分かる）
   | { type: 'throwStone' } // 距離があるうちの一投（安全だが弱い）
+  | { type: 'throwFireOil' } // 火油の瓶（種族を問わず焼くが、逃げ場がないと己も焼く）
   | { type: 'throwTalisman'; pattern: string }; // 札の賭け（相性は投げるまで分からない）
 
 const key = (p: Vec) => `${p.x},${p.y}`;
@@ -199,6 +220,8 @@ export type StartKit = {
   food: number;
   stones: number;
   spareTorches: number;
+  /** 火油の瓶（帳場で買う。持ち越し可） */
+  fireOil: number;
   /** 手持ちの得物（先頭が最良）。空ならギルドの標準（傷んだ短剣）が支給される */
   weapons: WeaponGear[];
   /** 着ている鎧。null ならギルドの標準（革鎧）が支給される */
@@ -212,6 +235,7 @@ export const BASE_KIT: StartKit = {
   food: 2,
   stones: 2,
   spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
+  fireOil: 0,
   weapons: [{ kind: 'dagger', wear: 45 }], // 傷んだ短剣。丸腰で潜る冒険者はいない
   armor: { kind: 'leather', wear: 10 },
   talismans: {},
@@ -241,6 +265,7 @@ function mergeKit(kit?: StartKit): StartKit {
     food: Math.max(BASE_KIT.food, kit.food),
     stones: Math.max(BASE_KIT.stones, kit.stones),
     spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
+    fireOil: Math.max(BASE_KIT.fireOil, kit.fireOil ?? 0),
     weapons: weapons.length > 0 ? weapons : baseWeapons,
     armor: kit.armor ? { ...kit.armor } : baseArmor,
     talismans: { ...kit.talismans },
@@ -268,6 +293,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       weapons: k.weapons,
       armor: k.armor,
       hasTreasure: false,
+      fireOil: k.fireOil,
       gems: {},
       potions: k.potions,
       food: k.food,
@@ -291,6 +317,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     deepestVisited: 1,
     senseSeq: 0,
     talismanKnowledge: {},
+    counted: false,
   };
 
   state.knowledge[0].walked.add(key(state.pos));
@@ -498,7 +525,7 @@ export function currentMaterials(state: GameState): string[] {
   out.push(conditionWord(p.condition));
   out.push(hungerWord(p.hunger));
   out.push(armorWord(p.armor));
-  out.push(torchWord(p.torch, p.spareTorches));
+  out.push(torchWord(p.torch, p.spareTorches, state.counted));
   out.push(`得物は${weaponWord(p.weapons[0])}`);
   if (p.poisonTurns > 0) out.push('毒が回っている');
   const depth = currentFloor(state).depth;
@@ -603,9 +630,15 @@ export function availableActions(state: GameState): Action[] {
   if (state.phase === 'dead' || state.phase === 'escaped') return [];
   if (state.phase === 'encounter') {
     const actions: Action[] = [{ type: 'engage' }, { type: 'retreat' }];
+    const foe = currentFloor(state).entities.find((e) => e.id === state.pending!.enemyId);
+    // 眠っている相手の懐は探れる（しくじれば目が覚める＝工夫の勝ち筋）
+    if (foe && (foe.sleepTurns ?? 0) > 0 && foe.carry !== 'none') {
+      actions.push({ type: 'steal' });
+    }
     // 距離があるうちの一投（一度だけ・刃を合わせる前だけ）。石は安全な削り、札は相性の賭け
     if (!state.pending!.thrown && state.pending!.rounds === 0) {
       if (state.player.stones > 0) actions.push({ type: 'throwStone' });
+      if (state.player.fireOil > 0) actions.push({ type: 'throwFireOil' });
       for (const [pattern, count] of Object.entries(state.player.talismans)) {
         if (count > 0) actions.push({ type: 'throwTalisman', pattern });
       }
@@ -641,6 +674,11 @@ export function availableActions(state: GameState): Action[] {
   }
   actions.push({ type: 'listen' });
   actions.push({ type: 'rest' });
+  // 荷を検める: 敵の姿が見えていない、落ち着いた時にだけ数えられる
+  const enemyInSight = floor.entities.some(
+    (e) => e.alive && !e.dormant && state.visibleNow.has(key(e.pos)),
+  );
+  if (!state.counted && !enemyInSight) actions.push({ type: 'checkPack' });
   if (here?.kind === 'stairsDown') actions.push({ type: 'descend' });
   if (here?.kind === 'stairsUp' && floor.depth > 1) actions.push({ type: 'ascend' });
   if (here?.kind === 'stairsUp' && floor.depth === 1) actions.push({ type: 'escape' });
@@ -713,10 +751,16 @@ function enemyStepToward(floor: Floor, from: Vec, to: Vec): Vec | null {
  * - 追跡は lastSeen へ向かう。着いても居なければ、あるいは見失って数ターンで諦める
  * - 金属系（moveEvery=2）は1ターンおきにしか動けない＝走れば距離が開く
  * - 攻撃は「行動開始時に隣接していた」場合のみ＝追いつかれても1ターンは反応できる
- * @param holdId このターン動かない敵（退却直後の相手など）
+ * @param holdId このターン動かない敵（退却直後の相手・打ち合い中の相手）
+ * @param duel 打ち合いの最中か。最中は遭遇を上書きせず、隣まで来た敵は「横槍」を入れる
  */
-function processEnemies(state: GameState, events: EventLine[], holdId?: string): void {
-  if (state.phase !== 'explore') return;
+function processEnemies(
+  state: GameState,
+  events: EventLine[],
+  holdId?: string,
+  duel = false,
+): void {
+  if (state.phase !== 'explore' && !duel) return;
   const floor = currentFloor(state);
   for (const e of floor.entities) {
     if (!e.alive || e.dormant || e.id === holdId) continue;
@@ -754,6 +798,12 @@ function processEnemies(state: GameState, events: EventLine[], holdId?: string):
 
     if (e.chasing && e.lastSeen) {
       if (orthAdjacent(e.pos, state.pos)) {
+        if (duel) {
+          // 乱戦の横槍: 打ち合いの最中に隣まで来た敵は、遭遇を上書きせず殴りかかる
+          sideAttack(state, e, events);
+          if (state.phase === 'dead') return;
+          continue;
+        }
         startEncounter(state, e, events, `${e.name}が追いついた——暗がりから躍りかかってくる！`);
         return;
       }
@@ -786,6 +836,40 @@ function processEnemies(state: GameState, events: EventLine[], holdId?: string):
   }
 }
 
+/** 乱戦の横槍役: 目を覚ましていて、近くで動いている他の敵（危険度に織り込む） */
+function nearbyOthers(state: GameState, enemyId: string): Approacher[] {
+  const floor = currentFloor(state);
+  return floor.entities
+    .filter(
+      (o) =>
+        o.alive &&
+        !o.dormant &&
+        o.id !== enemyId &&
+        (o.sleepTurns ?? 0) <= 0 &&
+        chebDist(o.pos, state.pos) <= 5 &&
+        (o.chasing || lineOfSight(floor, o.pos, state.pos)),
+    )
+    .map((o) => ({ entity: o, distance: chebDist(o.pos, state.pos) }));
+}
+
+/** 乱戦の横槍: 打ち合いの最中、別の敵が隣から殴りかかる（実戦と同じ反撃モデル） */
+function sideAttack(state: GameState, e: Entity, events: EventLine[]): void {
+  const p = state.player;
+  const profile = combatProfile(p, e, state.instance.character);
+  if (state.rng.next() < enemyHitChance(e.strength, profile)) {
+    const dmg = rollEnemyDamage(e.strength, profile, state.rng);
+    p.condition -= dmg;
+    events.push(bad(`横合いから${e.name}の一撃が飛んできた。`));
+    wearArmor(state, 3 + Math.floor(state.rng.next() * 5), events);
+    if (p.condition <= 0) {
+      recordFightEnd(state, 'death');
+      die(state, events, '乱戦に呑まれた。二匹目を、数えに入れていなかった。');
+    }
+  } else {
+    events.push(`横合いから${e.name}が躍りかかる——身を捻ってかわした。`);
+  }
+}
+
 /** 敵も罠を踏む——追われているなら、知っている罠の上を走って誘い込める */
 function enemyStepsOnTrap(state: GameState, e: Entity, events: EventLine[]): void {
   const floor = currentFloor(state);
@@ -805,7 +889,12 @@ function enemyStepsOnTrap(state: GameState, e: Entity, events: EventLine[]): voi
 // ---- エンカウント ----
 
 function startEncounter(state: GameState, enemy: Entity, events: EventLine[], lead?: string): void {
-  const assessment = assessDanger(state.player, enemy, state.instance.character);
+  const assessment = assessDanger(
+    state.player,
+    enemy,
+    state.instance.character,
+    nearbyOthers(state, enemy.id),
+  );
   const soundByKind: Record<string, string> = {
     metallic: '金属の擦れる音を立てて、それは振り向いた。',
     beast: '低い唸りが喉の奥から漏れている。',
@@ -835,14 +924,40 @@ function startEncounter(state: GameState, enemy: Entity, events: EventLine[], le
 }
 
 /** 先制の一投（§10: 賭けの結果は危険度ラベルの変化として即座に返す） */
-function resolveThrow(state: GameState, events: EventLine[], pattern?: string): void {
+function resolveThrow(
+  state: GameState,
+  events: EventLine[],
+  opts: { pattern?: string; fireOil?: boolean } = {},
+): void {
   const pending = state.pending!;
   const floor = currentFloor(state);
   const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
   const p = state.player;
+  const pattern = opts.pattern;
   pending.thrown = true;
 
-  if (!pattern) {
+  if (opts.fireOil) {
+    // 火油: 種族を問わず確実に大きく焼く。だが炎はうねる——下がれる床がなければ己も焼く
+    p.fireOil--;
+    enemy.strength = Math.max(0.05, enemy.strength - (0.3 + state.rng.next() * 0.12));
+    events.push(good(`火油の瓶が${enemy.name}の足元で爆ぜ、炎が奴を呑んだ。`));
+    if ((enemy.sleepTurns ?? 0) > 0) {
+      enemy.sleepTurns = 0;
+      events.push('炎に炙られ、それは跳ね起きた。');
+    }
+    const room = orthNeighbors(state.pos).filter(
+      (q) => isWalkable(floor, q) && !enemyAt(floor, q),
+    );
+    if (room.length === 0) {
+      const dmg = 8 + Math.floor(state.rng.next() * 8);
+      p.condition -= dmg;
+      events.push(bad('壁を背にしていた——うねり返した炎が、あなたの腕も舐めた。'));
+      if (p.condition <= 0) {
+        die(state, events, '自分の放った炎が、最後の一押しになった。');
+        return;
+      }
+    }
+  } else if (!pattern) {
     p.stones--;
     enemy.strength = Math.max(0.05, enemy.strength - (0.08 + state.rng.next() * 0.06));
     events.push(`石を投げつけた。${enemy.name}は一瞬ひるんだ。`);
@@ -912,7 +1027,12 @@ function resolveThrow(state: GameState, events: EventLine[], pattern?: string): 
 
   // 危険度を再評価して見せる——賭けの結果がラベルの変化として返る
   const before = pending.assessment.label;
-  pending.assessment = assessDanger(p, enemy, state.instance.character);
+  pending.assessment = assessDanger(
+    p,
+    enemy,
+    state.instance.character,
+    nearbyOthers(state, enemy.id),
+  );
   events.push(
     pending.assessment.label === before
       ? `（危険度：${before}のまま）`
@@ -1070,6 +1190,81 @@ function recordFightEnd(
   });
 }
 
+/**
+ * 眠る相手の懐を探る（工夫の勝ち筋）。
+ * 成功すれば戦わずに持ち物——主が抱く宝さえ——を抜き取れる。しくじれば目が覚める。
+ */
+function resolveSteal(state: GameState, events: EventLine[]): void {
+  const pending = state.pending!;
+  const floor = currentFloor(state);
+  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
+  const p = state.player;
+  if ((enemy.sleepTurns ?? 0) <= 0 || enemy.carry === 'none') return;
+
+  // 韋駄天の札で体が軽ければ、指先も速い
+  const successP = 0.6 + (p.hasteTurns > 0 ? 0.2 : 0);
+  if (state.rng.next() < successP) {
+    switch (enemy.carry) {
+      case 'treasure':
+        p.hasTreasure = true;
+        events.push(
+          good(
+            `眠る${enemy.name}の腕の中から、布に包まれた重みをそっと抜き取った。宝だ。奴が目を覚ます前に、ここを離れろ。`,
+          ),
+        );
+        break;
+      case 'weapon':
+        gainWeapon(
+          state,
+          { kind: 'sword', wear: 15 + Math.floor(state.rng.next() * 45) },
+          events,
+          '眠る相手が抱えていたのは',
+        );
+        break;
+      case 'potion': {
+        const kind = gainPotion(state);
+        events.push(good(`眠る${enemy.name}の懐から${POTION_NAMES[kind]}の瓶を抜き取った。`));
+        break;
+      }
+      case 'food':
+        p.food++;
+        events.push(good(`眠る${enemy.name}の脇から糧袋を引き抜いた。`));
+        break;
+      case 'gem':
+        gainGem(state, events, '眠る相手の懐で光っていたのは');
+        break;
+    }
+    enemy.carry = 'none';
+    state.pending = null;
+    state.phase = 'explore';
+    advanceTurn(state, events, 0.8, 0.8);
+    if (state.phase !== 'explore') return;
+    processEnemies(state, events, enemy.id);
+    if (state.phase === 'explore') look(state, events);
+    return;
+  }
+
+  // しくじった——目が覚める（眠りの分の危険度の割引が消える）
+  enemy.sleepTurns = 0;
+  enemy.chasing = true;
+  enemy.lastSeen = { ...state.pos };
+  events.push(bad(`指先が触れた瞬間、${enemy.name}の目が開いた。`));
+  advanceTurn(state, events, 0.8, 0.8);
+  if (state.phase === 'dead') return;
+  const before = pending.assessment.label;
+  pending.assessment = assessDanger(
+    p,
+    enemy,
+    state.instance.character,
+    nearbyOthers(state, enemy.id),
+  );
+  events.push(
+    pending.assessment.label === before
+      ? `（危険度：${before}のまま）`
+      : `（危険度：${before} → ${pending.assessment.label}）`,
+  );
+}
+
 /** 相手が倒れた。戦果の整理と、平時への復帰 */
 function finishFight(state: GameState, events: EventLine[], enemy: Entity): void {
   const pending = state.pending!;
@@ -1157,9 +1352,18 @@ function resolveEngage(state: GameState, events: EventLine[]): void {
     return;
   }
 
-  // 形勢を読み直す——ラベルの変化がそのまま戦況になる
+  // 乱戦: 打ち合いの間にも、他の何かは動いている。隣まで来れば横槍が飛ぶ
+  processEnemies(state, events, enemy.id, true);
+  if ((state.phase as GamePhase) === 'dead') return; // 横槍に倒れた（記録はsideAttack内で済み）
+
+  // 形勢を読み直す——ラベルの変化がそのまま戦況になる（近づく影も織り込む）
   const before = pending.assessment.label;
-  pending.assessment = assessDanger(p, enemy, state.instance.character);
+  pending.assessment = assessDanger(
+    p,
+    enemy,
+    state.instance.character,
+    nearbyOthers(state, enemy.id),
+  );
   events.push(
     pending.assessment.label === before
       ? `（危険度：${before}のまま）`
@@ -1631,6 +1835,25 @@ function doInspect(state: GameState, events: EventLine[]): void {
 
 // ---- その他の行動 ----
 
+/** 荷を検める: 落ち着いている時に1ターン使えば、数はもう見失わない（観測は事実＝数字を出してよい） */
+function doCheckPack(state: GameState, events: EventLine[]): void {
+  const p = state.player;
+  state.counted = true;
+  const parts: string[] = [];
+  if (p.stones > 0) parts.push(`石が${p.stones}`);
+  if (p.food > 0) parts.push(`糧食が${p.food}`);
+  for (const [kind, count] of Object.entries(p.potions)) {
+    if (count > 0) parts.push(`${POTION_NAMES[kind] ?? '薬'}が${count}`);
+  }
+  if (p.fireOil > 0) parts.push(`火油の瓶が${p.fireOil}`);
+  for (const [pattern, count] of Object.entries(p.talismans)) {
+    if (count > 0) parts.push(`${pattern}の札が${count}`);
+  }
+  parts.push(p.spareTorches > 0 ? `予備の松明が${p.spareTorches}本` : '予備の松明はなし');
+  events.push(`腰を下ろして荷を検めた。${parts.join('、')}。数はもう頭に入っている。`);
+  advanceTurn(state, events, 0.5, 0.5);
+}
+
 /** 休息で戻せる体調の上限。深い傷は迷宮の中では塞がらない（薬と泉だけが超えられる） */
 const REST_CAP = 70;
 
@@ -1785,8 +2008,10 @@ export function step(state: GameState, action: Action): EventLine[] {
   if (state.phase === 'encounter') {
     if (action.type === 'engage') resolveEngage(state, events);
     else if (action.type === 'retreat') resolveRetreat(state, events);
+    else if (action.type === 'steal') resolveSteal(state, events);
     else if (action.type === 'throwStone') resolveThrow(state, events);
-    else if (action.type === 'throwTalisman') resolveThrow(state, events, action.pattern);
+    else if (action.type === 'throwFireOil') resolveThrow(state, events, { fireOil: true });
+    else if (action.type === 'throwTalisman') resolveThrow(state, events, { pattern: action.pattern });
     state.events = events;
     return events;
   }
@@ -1801,6 +2026,9 @@ export function step(state: GameState, action: Action): EventLine[] {
       break;
     case 'rest':
       doRest(state, events);
+      break;
+    case 'checkPack':
+      doCheckPack(state, events);
       break;
     case 'drinkPotion':
       doDrinkPotion(state, action.kind, events);
