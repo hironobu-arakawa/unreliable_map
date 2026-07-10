@@ -17,6 +17,7 @@ import type {
   Vec,
 } from './types';
 import { ENEMY_NAMES, POTION_DROP, POTION_NAMES } from './character';
+import { GEM_DATA, rollGemKind } from './economy';
 import type { RNG } from './rng';
 import { hashSeed, mulberry32, pick, pickWeighted, randInt, shuffle } from './rng';
 
@@ -276,9 +277,10 @@ function generateFloor(
     const content = pickWeighted(rng, [
       ['weapon', 0.12 * (0.5 + b.rewardWeaponBias)],
       ['armor', 0.07 * (0.5 + b.rewardWeaponBias)],
-      ['potion', 0.16],
-      ['food', 0.16],
-      ['talisman', 0.14],
+      ['potion', 0.15],
+      ['food', 0.15],
+      ['talisman', 0.13],
+      ['gem', 0.05 + (1 - upperness) * 0.12], // 深い箱ほど石が眠る
       ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
       ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
       ['empty', 0.1],
@@ -327,14 +329,18 @@ function generateFloor(
       0.95,
       Math.max(0.1, 0.22 + depthFrac * 0.58 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
     );
+    // 深い階の敵は光るものを呑んでいることがある（挑む動機の上積み）
+    const gemCarryP = 0.08 + (1 - upperness) * 0.22;
     const carry =
-      kind === 'metallic'
-        ? rng.next() < b.rewardWeaponBias
-          ? ('weapon' as const)
-          : ('potion' as const)
-        : kind === 'beast'
-          ? ('food' as const)
-          : ('potion' as const);
+      rng.next() < gemCarryP
+        ? ('gem' as const)
+        : kind === 'metallic'
+          ? rng.next() < b.rewardWeaponBias
+            ? ('weapon' as const)
+            : ('potion' as const)
+          : kind === 'beast'
+            ? ('food' as const)
+            : ('potion' as const);
     floor.entities.push({
       id: `e${depth}-${i}`,
       kind,
@@ -400,6 +406,24 @@ function generateFloor(
   if (depth === midDepth && rng.next() < b.rewardWeaponBias) {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.items.push({ id: `i${depth}-weapon`, kind: 'weapon', name: '古びた剣', pos: p, taken: false });
+  }
+  // 宝石: 深い階の土にときどき埋もれている
+  {
+    const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
+    if (depth >= 2 && rng.next() < 0.1 + depthFrac * 0.2) {
+      const p = takeFreeCell(floor, cells, used);
+      if (p) {
+        const gemKind = rollGemKind(rng, depthFrac);
+        floor.items.push({
+          id: `i${depth}-gem`,
+          kind: 'gem',
+          name: GEM_DATA[gemKind].name,
+          pos: p,
+          taken: false,
+          gemKind,
+        });
+      }
+    }
   }
 
   return floor;

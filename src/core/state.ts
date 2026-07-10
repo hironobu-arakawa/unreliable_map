@@ -17,6 +17,7 @@ import type { DungeonCharacter } from './types';
 import { KIND_WORD, POTION_DROP, POTION_NAMES } from './character';
 import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
 import { combatProfile, fightRound, HEAVY_LOSS } from './combat';
+import { describeGems, GEM_DATA, rollGemKind } from './economy';
 import { addWeapon, ARMOR_DATA, armorGuard, armorWord, weaponBetter, weaponWord } from './gear';
 export { KIND_WORD, POTION_NAMES };
 export { armorWord, weaponWord } from './gear';
@@ -267,6 +268,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       weapons: k.weapons,
       armor: k.armor,
       hasTreasure: false,
+      gems: {},
       potions: k.potions,
       food: k.food,
       stones: k.stones,
@@ -355,7 +357,9 @@ function sourceName(c: Claim): string {
 
 /** 箱の中身が「当たり」か */
 function chestGood(actualKind: string): boolean {
-  return ['chest_weapon', 'chest_armor', 'chest_potion', 'chest_food'].includes(actualKind);
+  return ['chest_weapon', 'chest_armor', 'chest_potion', 'chest_food', 'chest_gem'].includes(
+    actualKind,
+  );
 }
 
 /** 検証時の対応文（なぜ外れたかが必ず言葉で残る。憲法4）。
@@ -569,12 +573,16 @@ function die(state: GameState, events: EventLine[], causeLine: string): void {
 function escape(state: GameState, events: EventLine[]): void {
   state.phase = 'escaped';
   const p = state.player;
+  const gems = describeGems(p.gems);
   state.escapeLog = [
     '生還記録：',
     p.hasTreasure
       ? 'あなたは井戸の底の宝を携え、光の下へ戻ってきた。'
-      : 'あなたは手ぶらで、しかし生きて戻ってきた。それで十分だ。',
+      : gems.length > 0
+        ? 'あなたは囊に石の重みを抱えて、生きて戻ってきた。'
+        : 'あなたは手ぶらで、しかし生きて戻ってきた。それで十分だ。',
     `最深到達: 地下${state.deepestVisited}階。`,
+    ...(gems.length > 0 ? [`持ち帰った石: ${gems.join('、')}。`] : []),
     conditionWord(p.condition) + '。' + armorWord(p.armor) + '。',
     '読んだ記録の当たり外れは、あなたの体が覚えているだろう。',
   ];
@@ -981,6 +989,17 @@ function gainArmor(state: GameState, a: ArmorGear, events: EventLine[], lead: st
   }
 }
 
+/** 宝石を得る（深いほど良い石）。持ち帰ればギルドが銀貨に換える */
+function gainGem(state: GameState, events: EventLine[], lead: string): void {
+  const p = state.player;
+  const floor = currentFloor(state);
+  const maxDepth = state.instance.floors.length;
+  const depthFrac = maxDepth > 1 ? (floor.depth - 1) / (maxDepth - 1) : 0;
+  const kind = rollGemKind(state.rng, depthFrac);
+  p.gems[kind] = (p.gems[kind] ?? 0) + 1;
+  events.push(good(`${lead}${GEM_DATA[kind].name}だ。持ち帰れば、帳場が値をつけてくれる。`));
+}
+
 /** 倒した敵の持ち物を必ず得る（挑む動機。何を持っているかは気配・記録が事前に匂わせる） */
 /** 骸から薬を得る（種類は懐を漁って初めて分かる） */
 function gainPotion(state: GameState): PotionKind {
@@ -1009,6 +1028,9 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
     case 'food':
       p.food++;
       events.push(good('奴が漁っていた糧袋を回収した。まだ食える。'));
+      break;
+    case 'gem':
+      gainGem(state, events, '骸の懐から転がり出たのは');
       break;
     case 'treasure':
       p.hasTreasure = true;
@@ -1282,6 +1304,9 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
     } else if (item.kind === 'stone') {
       p.stones++;
       events.push(good('手頃な石を拾った。投げるにはちょうどいい。'));
+    } else if (item.kind === 'gem' && item.gemKind) {
+      p.gems[item.gemKind] = (p.gems[item.gemKind] ?? 0) + 1;
+      events.push(good(`土に半ば埋もれた${GEM_DATA[item.gemKind].name}を掘り出した。持ち帰れば銀貨になる。`));
     } else if (item.kind === 'talisman' && item.pattern) {
       p.talismans[item.pattern] = (p.talismans[item.pattern] ?? 0) + 1;
       events.push(good(`${item.pattern}の札が落ちている。模様の意味までは読めない。`));
@@ -1498,6 +1523,9 @@ function doOpen(state: GameState, events: EventLine[]): void {
     case 'food':
       p.food++;
       events.push(good('箱の中に蝋引きの包み——糧食だ。当たりだ。'));
+      break;
+    case 'gem':
+      gainGem(state, events, '箱の底で鈍く光っているのは');
       break;
     case 'talisman': {
       const patterns = Object.keys(state.instance.talismanLore);

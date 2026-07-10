@@ -7,6 +7,7 @@
 
 import { SOURCE_NAMES } from '../core/confidence';
 import { assessDanger } from '../core/danger';
+import { describeGems } from '../core/economy';
 import { enemyAt, featureAt, itemAt } from '../core/generate';
 import {
   armorWord,
@@ -213,6 +214,7 @@ function renderStatusHtml(state: GameState): string {
       .join('・');
     carry.push(`${pattern}の札${count > 1 ? '（数枚）' : ''}${known ? `〔${known}〕` : ''}`);
   }
+  carry.push(...describeGems(p.gems));
   if (p.hasTreasure) carry.push('迷宮の底の宝');
   lines.push(`<div class="line">持ち物：${escapeHtml(carry.join('、'))}</div>`);
   return lines.join('');

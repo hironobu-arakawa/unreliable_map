@@ -22,6 +22,8 @@ export type Profile = {
   wells: Record<string, WellRecord>;
   /** 前回の生還で持ち出した品。死ぬと null（ギルドの標準の支度に戻る） */
   carryover: StartKit | null;
+  /** ギルドの預り金（銀貨）。宝石の換金で貯まり、支度の買い足しに使う。死んでも失わない */
+  coin: number;
   /** 最後に開いていたギルド支部（台帳画面の復元用） */
   lastBranch?: string;
 };
@@ -29,12 +31,13 @@ export type Profile = {
 const STORAGE_KEY = 'unreliable-map/profile/v1';
 
 function emptyProfile(): Profile {
-  return { version: 2, wells: {}, carryover: null };
+  return { version: 2, wells: {}, carryover: null, coin: 0 };
 }
 
 /** v1（weaponTier/番号の薬）→ v2（装備アイテム）の移行 */
 function migrate(parsed: Record<string, unknown>): Profile {
   const p = parsed as unknown as Profile & { version: number };
+  p.coin ??= 0;
   if (p.version === 2) return p;
   if (p.version !== 1) return emptyProfile();
   const carry = p.carryover as unknown as {

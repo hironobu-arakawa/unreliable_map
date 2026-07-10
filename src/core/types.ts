@@ -54,6 +54,7 @@ export type ChestContent =
   | 'potion'
   | 'food'
   | 'talisman' // 模様の札
+  | 'gem' // 宝石（持ち帰れば換金できる）
   | 'treasure' // 持ち帰るべき宝（箱型のランでのみ）
   | 'needle'
   | 'mimic'
@@ -97,7 +98,7 @@ export type Entity = {
   /** 視線を失ってからの経過ターン */
   lostTurns: number;
   /** 持ち物（必ず何か落とす。気配・記録のヒント対象＝挑む動機） */
-  carry: 'weapon' | 'potion' | 'food' | 'treasure' | 'none';
+  carry: 'weapon' | 'potion' | 'food' | 'gem' | 'treasure' | 'none';
   /** 宝箱に潜んでいる（ミミック）。開けられるまで動かず、見えず、遭遇しない */
   dormant?: boolean;
   /** 最深部の主（宝を抱く守り手。ボス型のランでのみ） */
@@ -106,7 +107,10 @@ export type Entity = {
   sleepTurns?: number;
 };
 
-export type ItemKind = 'potion' | 'food' | 'weapon' | 'stone' | 'talisman';
+export type ItemKind = 'potion' | 'food' | 'weapon' | 'stone' | 'talisman' | 'gem';
+
+/** 宝石の種類。持ち帰ればギルドの帳場が銀貨に換えてくれる（死ねば大地に還る） */
+export type GemKind = 'garnet' | 'moonstone' | 'sapphire';
 
 /** 薬の種類。瓶の銘は読める——効くかどうかは土地（potionInstability）と運が決める */
 export type PotionKind = 'salve' | 'elixir' | 'antidote' | 'tonic' | 'murk';
@@ -123,6 +127,8 @@ export type Item = {
   pattern?: string;
   /** 薬の種類（kind === 'potion' のとき） */
   potionKind?: PotionKind;
+  /** 宝石の種類（kind === 'gem' のとき） */
+  gemKind?: GemKind;
 };
 
 /** 札の効き方の系統。模様→系統の対応はランごとにシャッフルされる */
@@ -266,6 +272,8 @@ export type PlayerState = {
   /** 着ている鎧。null なら身を守るものがない */
   armor: ArmorGear | null;
   hasTreasure: boolean; // 最深部の宝
+  /** 拾った宝石（種類→個数）。生還すれば帳場で銀貨になる。死ねば失う */
+  gems: Record<string, number>;
   potions: Record<string, number>; // 薬の種類→本数（キーは PotionKind）
   food: number;
   stones: number; // 投げる石（安全だが弱い）

@@ -3,7 +3,9 @@
 // runSeed は URL の ?seed=（＋?well=）で固定でき、固定すれば潜行は完全に再現可能（§4.2・受け入れ条件9）。
 
 import { ATLAS, BRANCHES, SILENT_WELL } from './core/character';
+import { gemTotal } from './core/economy';
 import { newGame, step, type Action, type EventLine, type GameState } from './core/state';
+import { baseKitClone, SHOP_ITEMS } from './ui/shop';
 import { dangerRateByLabel, hitRateByLabel } from './core/telemetry';
 import type { DungeonCharacter } from './core/types';
 import { bindKeyboard, renderActions } from './ui/input';
@@ -22,6 +24,8 @@ const el = {
   branches: document.getElementById('branches')!,
   branchNote: document.getElementById('branch-note')!,
   carryNote: document.getElementById('carry-note')!,
+  bank: document.getElementById('bank')!,
+  shop: document.getElementById('shop')!,
   wells: document.getElementById('wells')!,
   game: document.getElementById('game')!,
   runTitle: document.getElementById('run-title')!,
@@ -83,8 +87,31 @@ function showAtlas(): void {
   el.atlas.hidden = false;
 
   el.carryNote.textContent = profile.carryover
-    ? `前回の生還から持ち出した品：${describeKit(profile.carryover)}`
-    : '支度はギルドの標準のみ（傷んだ短剣・松明・傷薬・糧食）。';
+    ? `次の潜行の支度：${describeKit(profile.carryover)}`
+    : '支度はギルドの標準のみ（傷んだ短剣・革鎧・松明・傷薬・糧食）。';
+
+  // 帳場: 預り金と店（宝石の換金で貯めた銀貨を、次の支度に変える）
+  el.bank.textContent = `ギルドの預り金：銀貨${profile.coin}枚`;
+  el.shop.innerHTML = '';
+  for (const item of SHOP_ITEMS) {
+    const btn = document.createElement('button');
+    btn.textContent = item.label;
+    const price = document.createElement('span');
+    price.className = 'price';
+    price.textContent = `銀${item.price}`;
+    btn.appendChild(price);
+    btn.title = item.note;
+    btn.disabled = profile.coin < item.price;
+    btn.addEventListener('click', () => {
+      if (profile.coin < item.price) return;
+      profile.coin -= item.price;
+      profile.carryover = profile.carryover ?? baseKitClone();
+      item.apply(profile.carryover);
+      saveProfile(profile);
+      showAtlas();
+    });
+    el.shop.appendChild(btn);
+  }
 
   const branch = BRANCHES.find((b) => b.id === currentBranchId) ?? BRANCHES[0];
 
@@ -193,6 +220,8 @@ function finalizeRun(): void {
       rec.deepest = Math.max(rec.deepest, state.deepestVisited);
       if (state.player.hasTreasure) rec.treasures++;
       profile.carryover = kitFromPlayer(state.player);
+      // 帳場の換金: 持ち帰った宝石は銀貨になり、預り金に積まれる（死んでも失わない）
+      profile.coin += gemTotal(state.player.gems);
     } else {
       rec.deaths++;
       profile.carryover = null;
@@ -210,6 +239,12 @@ function endMetaLines(s: GameState): string[] {
   if (isReplay) return ['（再現潜行——この結末は帳面に残らない。）'];
   if (s.phase === 'escaped') {
     const lines = ['持ち出した品はギルドに預けた——次の潜行の支度になる。'];
+    const total = gemTotal(s.player.gems);
+    if (total > 0) {
+      lines.push(
+        `帳場は持ち帰った石に値をつけた——しめて銀貨${total}枚。預りは銀貨${profile.coin}枚になった。`,
+      );
+    }
     if (s.player.hasTreasure) lines.push('台帳のあなたの頁に、銘がひとつ刻まれた。');
     return lines;
   }

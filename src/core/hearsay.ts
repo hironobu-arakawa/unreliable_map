@@ -117,6 +117,8 @@ function carryHintText(carry: string): string | undefined {
       return '「奴の巣に薬瓶が転がっていた」とも。';
     case 'food':
       return '「誰かの糧袋を漁っていた」とも。';
+    case 'gem':
+      return '「奴の腹の底で、何かが光っていた」とも。';
     default:
       return undefined;
   }
@@ -219,7 +221,13 @@ const ALLOWED_MISS: Record<ClaimKind, MissPattern[]> = {
 
 /** 箱の中身から「当たりか」を判定 */
 function chestIsGood(content: string | undefined): boolean {
-  return content === 'weapon' || content === 'armor' || content === 'potion' || content === 'food';
+  return (
+    content === 'weapon' ||
+    content === 'armor' ||
+    content === 'potion' ||
+    content === 'food' ||
+    content === 'gem'
+  );
 }
 
 /** 古地図・メモの生成結果。claims は memos のいずれかに属する（memoId） */
