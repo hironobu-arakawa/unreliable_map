@@ -95,8 +95,14 @@ export function weaponBetter(a: WeaponGear, b: WeaponGear): boolean {
   return a.wear < b.wear;
 }
 
-/** 手持ちに加え、最良の得物が先頭（＝手にしている）になるよう並べる */
-export function addWeapon(weapons: WeaponGear[], w: WeaponGear): void {
-  weapons.push(w);
-  weapons.sort((x, y) => (weaponBetter(x, y) ? -1 : 1));
+/** 携行数の上限。得物は手＋腰2、鎧は着ている1＋背の予備1 */
+export const WEAPON_CAP = 3;
+
+/**
+ * 傷みの目盛り〔▰▰▰▱▱〕（1目盛り＝2割の健全さ）。
+ * 自分の得物の傷みは見れば分かる事実——目盛りで見せても憲法5には反しない
+ */
+export function gearGauge(wear: number): string {
+  const filled = Math.max(0, Math.min(5, Math.ceil((100 - wear) / 20)));
+  return `〔${'▰'.repeat(filled)}${'▱'.repeat(5 - filled)}〕`;
 }

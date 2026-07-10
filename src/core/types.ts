@@ -129,6 +129,10 @@ export type Item = {
   potionKind?: PotionKind;
   /** 宝石の種類（kind === 'gem' のとき） */
   gemKind?: GemKind;
+  /** 置いていった得物の実体（kind === 'weapon' で、拾い直せるもの） */
+  weaponGear?: WeaponGear;
+  /** 置いていった鎧の実体（kind === 'armor' で、拾い直せるもの） */
+  armorGear?: ArmorGear;
 };
 
 /** 札の効き方の系統。模様→系統の対応はランごとにシャッフルされる */
@@ -271,10 +275,15 @@ export type PlayerState = {
   spareTorches: number; // 予備の松明（尽きてからが本当の暗闇）
   poisonTurns: number; // 毒の残りターン
   hasteTurns: number; // 韋駄天の札の残りターン（体が軽く、敵の足が半分に見える）
-  /** 手持ちの得物。先頭が手にしているもの（最良が自動で先頭に来る）。空なら素手 */
+  /**
+   * 手持ちの得物。先頭が「手にしている」もの（持ち替えはプレイヤーの選択。自動では替えない）。
+   * 最大3本（手＋腰2）。空なら素手
+   */
   weapons: WeaponGear[];
   /** 着ている鎧。null なら身を守るものがない */
   armor: ArmorGear | null;
+  /** 背に括った予備の鎧（1つまで）。着替えはプレイヤーの選択 */
+  armorSpare: ArmorGear | null;
   hasTreasure: boolean; // 最深部の宝
   /** 火油の瓶。種族を問わず大きく削るが、逃げ場のない場所で使えば自分も焼く */
   fireOil: number;

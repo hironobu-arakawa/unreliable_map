@@ -13,6 +13,7 @@ import { SILENT_WELL } from '../src/core/character';
 import { confidenceLabel } from '../src/core/confidence';
 import { assessDanger } from '../src/core/danger';
 import { gemTotal } from '../src/core/economy';
+import { armorGuard, weaponBetter } from '../src/core/gear';
 import { featureAt, isWalkable, tileAt } from '../src/core/generate';
 import { hashSeed, mulberry32, type RNG } from '../src/core/rng';
 import {
@@ -231,6 +232,19 @@ function run(seed: number, brain: Brain): RunResult {
       continue;
     }
     consecutiveRetreats = 0;
+
+    // ---- 装備管理: 良い得物・鎧を拾っていたら持ち替える（自動装備は廃止された） ----
+    {
+      const betterIdx = p.weapons.findIndex((w, i) => i > 0 && weaponBetter(w, p.weapons[0]));
+      if (betterIdx > 0) {
+        step(state, { type: 'equipWeapon', index: betterIdx });
+        continue;
+      }
+      if (p.armorSpare && armorGuard(p.armorSpare) > armorGuard(p.armor)) {
+        step(state, { type: 'equipArmor' });
+        continue;
+      }
+    }
 
     // ---- 生活維持 ----
     if (p.hunger >= 75 && has('eat')) {

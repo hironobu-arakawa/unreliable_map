@@ -1,6 +1,7 @@
 // 行動選択 §11
 // core の availableActions を読んでボタンを並べ、選択を core に渡すだけ。
 
+import { armorShortWord, weaponWord } from '../core/gear';
 import { availableActions, POTION_NAMES, type Action, type GameState } from '../core/state';
 
 const ACTION_LABELS: Record<string, string> = {
@@ -34,6 +35,14 @@ export function actionLabel(a: Action, state?: GameState): string {
   if (a.type === 'drinkPotion') return `${POTION_NAMES[a.kind] ?? '薬'}を飲む`;
   // 打ち合いが始まったら「挑む」ではなく「打ち込む」（ターン制戦闘の一手）
   if (a.type === 'engage' && state?.pending && state.pending.rounds > 0) return '打ち込む';
+  if (a.type === 'equipWeapon') {
+    const w = state?.player.weapons[a.index];
+    return w ? `${weaponWord(w)}に持ち替える` : '持ち替える';
+  }
+  if (a.type === 'equipArmor') {
+    const s = state?.player.armorSpare;
+    return s ? `${armorShortWord(s)}に着替える` : '着替える';
+  }
   return ACTION_LABELS[a.type] ?? a.type;
 }
 

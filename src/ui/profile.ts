@@ -3,7 +3,7 @@
 // localStorage に触れるのはUI層のみ（coreは純粋 §4.1）。
 
 import { POTION_NAMES } from '../core/character';
-import { armorShortWord, weaponWord } from '../core/gear';
+import { armorShortWord, gearGauge, weaponWord } from '../core/gear';
 import type { StartKit } from '../core/state';
 import type { PlayerState, WeaponGear } from '../core/types';
 
@@ -112,6 +112,7 @@ export function kitFromPlayer(p: PlayerState): StartKit {
     fireOil: p.fireOil,
     weapons: p.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w })),
     armor: p.armor ? { ...p.armor } : null,
+    armorSpare: p.armorSpare ? { ...p.armorSpare } : null,
     talismans,
   };
 }
@@ -119,8 +120,9 @@ export function kitFromPlayer(p: PlayerState): StartKit {
 /** 台帳での持ち越し品の表記（帳場の声なので個数で書く。潜行中の言葉とは別） */
 export function describeKit(kit: StartKit): string {
   const parts: string[] = [];
-  for (const w of kit.weapons) parts.push(weaponWord(w));
-  if (kit.armor) parts.push(armorShortWord(kit.armor));
+  for (const w of kit.weapons) parts.push(`${weaponWord(w)}${gearGauge(w.wear)}`);
+  if (kit.armor) parts.push(`${armorShortWord(kit.armor)}${gearGauge(kit.armor.wear)}`);
+  if (kit.armorSpare) parts.push(`予備の${armorShortWord(kit.armorSpare)}${gearGauge(kit.armorSpare.wear)}`);
   for (const [kind, count] of Object.entries(kit.potions)) {
     if (count > 0) parts.push(`${POTION_NAMES[kind] ?? '薬'}×${count}`);
   }

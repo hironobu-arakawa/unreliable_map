@@ -8,6 +8,7 @@
 import { SOURCE_NAMES } from '../core/confidence';
 import { assessDanger } from '../core/danger';
 import { describeGems } from '../core/economy';
+import { armorShortWord, gearGauge } from '../core/gear';
 import { enemyAt, featureAt, itemAt } from '../core/generate';
 import {
   armorWord,
@@ -196,14 +197,22 @@ function renderStatusHtml(state: GameState): string {
   // 荷を検めた後は個数で書く（観測済みの事実は数字を出してよい。曖昧なのは検めるまで）
   const n = (name: string, count: number, vague: string): string =>
     state.counted ? `${name}×${count}` : `${name}${count > 1 ? vague : ''}`;
+  // 傷みの目盛り（見れば分かる事実。折れかけ・ぼろぼろは赤）
+  const gauge = (wear: number): string =>
+    `<span class="gauge${wear >= 70 ? ' worn' : ''}">${gearGauge(wear)}</span>`;
   const lines: string[] = [
     `<div class="line">${conditionWord(p.condition)}。${hungerWord(p.hunger)}。</div>`,
-    `<div class="line">${armorWord(p.armor)}。${torchWord(p.torch, p.spareTorches, state.counted)}。</div>`,
+    `<div class="line">${escapeHtml(armorWord(p.armor))}${p.armor ? gauge(p.armor.wear) : ''}。${torchWord(p.torch, p.spareTorches, state.counted)}。</div>`,
   ];
   if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
   if (p.hasteTurns > 0) lines.push('<div class="line good">体が羽のように軽い。</div>');
-  const carry: string[] = [`得物は${weaponWord(p.weapons[0])}`];
-  for (const w of p.weapons.slice(1)) carry.push(`替えの${weaponWord(w)}`);
+  const carry: string[] = [
+    p.weapons[0]
+      ? `得物は${escapeHtml(weaponWord(p.weapons[0]))}${gauge(p.weapons[0].wear)}`
+      : '得物は素手',
+  ];
+  for (const w of p.weapons.slice(1)) carry.push(`替えの${escapeHtml(weaponWord(w))}${gauge(w.wear)}`);
+  if (p.armorSpare) carry.push(`背に${escapeHtml(armorShortWord(p.armorSpare))}${gauge(p.armorSpare.wear)}`);
   for (const [kind, count] of Object.entries(p.potions)) {
     if (count <= 0) continue;
     carry.push(n(POTION_NAMES[kind] ?? '薬', count, '（いくつか）'));
@@ -225,9 +234,10 @@ function renderStatusHtml(state: GameState): string {
       .join('・');
     carry.push(`${n(`${pattern}の札`, count, '（数枚）')}${known ? `〔${known}〕` : ''}`);
   }
-  carry.push(...describeGems(p.gems));
+  carry.push(...describeGems(p.gems).map(escapeHtml));
   if (p.hasTreasure) carry.push('迷宮の底の宝');
-  lines.push(`<div class="line">持ち物：${escapeHtml(carry.join('、'))}</div>`);
+  // 装備エントリはゲージのspanを含むため、ここでは再エスケープしない（各エントリで済ませてある）
+  lines.push(`<div class="line">持ち物：${carry.join('、')}</div>`);
   return lines.join('');
 }
 

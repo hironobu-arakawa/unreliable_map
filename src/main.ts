@@ -5,7 +5,7 @@
 import { ATLAS, BRANCHES, SILENT_WELL } from './core/character';
 import { gemTotal } from './core/economy';
 import { newGame, step, type Action, type EventLine, type GameState } from './core/state';
-import { baseKitClone, SHOP_ITEMS } from './ui/shop';
+import { baseKitClone, repairAll, repairFee, SHOP_ITEMS } from './ui/shop';
 import { dangerRateByLabel, hitRateByLabel } from './core/telemetry';
 import type { DungeonCharacter } from './core/types';
 import { bindKeyboard, renderActions } from './ui/input';
@@ -93,6 +93,30 @@ function showAtlas(): void {
   // 帳場: 預り金と店（宝石の換金で貯めた銀貨を、次の支度に変える）
   el.bank.textContent = `ギルドの預り金：銀貨${profile.coin}枚`;
   el.shop.innerHTML = '';
+  // 整備: 持ち帰った装備の傷みを、帳場の職人がまとめて直す（直せるのは地上だけ）
+  {
+    const fee = repairFee(profile.carryover);
+    const btn = document.createElement('button');
+    btn.textContent = '装備をまとめて整備する';
+    const price = document.createElement('span');
+    price.className = 'price';
+    price.textContent = fee > 0 ? `銀${fee}` : '——';
+    btn.appendChild(price);
+    btn.title =
+      fee > 0
+        ? '傷んだ得物と鎧を、職人が新品同様に仕立て直す。迷宮の中では直せない。'
+        : '整備の要る装備はない。';
+    btn.disabled = fee <= 0 || profile.coin < fee;
+    btn.addEventListener('click', () => {
+      if (!profile.carryover || fee <= 0 || profile.coin < fee) return;
+      profile.coin -= fee;
+      repairAll(profile.carryover);
+      saveProfile(profile);
+      showAtlas();
+    });
+    el.shop.appendChild(btn);
+  }
+  const kitNow = profile.carryover ?? baseKitClone();
   for (const item of SHOP_ITEMS) {
     const btn = document.createElement('button');
     btn.textContent = item.label;
@@ -101,11 +125,12 @@ function showAtlas(): void {
     price.textContent = `銀${item.price}`;
     btn.appendChild(price);
     btn.title = item.note;
-    btn.disabled = profile.coin < item.price;
+    btn.disabled = profile.coin < item.price || (item.canBuy ? !item.canBuy(kitNow) : false);
     btn.addEventListener('click', () => {
       if (profile.coin < item.price) return;
-      profile.coin -= item.price;
       profile.carryover = profile.carryover ?? baseKitClone();
+      if (item.canBuy && !item.canBuy(profile.carryover)) return;
+      profile.coin -= item.price;
       item.apply(profile.carryover);
       saveProfile(profile);
       showAtlas();

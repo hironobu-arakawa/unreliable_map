@@ -26,11 +26,12 @@ import {
 } from './combat';
 import { describeGems, GEM_DATA, rollGemKind } from './economy';
 import {
-  addWeapon,
   ARMOR_DATA,
   armorGuard,
+  armorShortWord,
   armorWord,
   rollGearBonus,
+  WEAPON_CAP,
   weaponBetter,
   weaponWord,
 } from './gear';
@@ -202,6 +203,8 @@ export type GameState = {
   visitedFloors: Set<number>;
   /** 再湧きした敵のID連番 */
   respawnSeq: number;
+  /** 床に置いていった装備のID連番 */
+  dropSeq: number;
 };
 
 export type Action =
@@ -220,6 +223,8 @@ export type Action =
   | { type: 'retreat' }
   | { type: 'steal' } // 眠る相手の懐を探る（しくじれば目が覚める）
   | { type: 'checkPack' } // 荷を検める: 落ち着いて数を数える（以後、個数が分かる）
+  | { type: 'equipWeapon'; index: number } // 腰の得物に持ち替える（1ターン・遭遇中は不可）
+  | { type: 'equipArmor' } // 背の予備の鎧に着替える（1ターン・遭遇中は不可）
   | { type: 'throwStone' } // 距離があるうちの一投（安全だが弱い）
   | { type: 'throwFireOil' } // 火油の瓶（種族を問わず焼くが、逃げ場がないと己も焼く）
   | { type: 'throwTalisman'; pattern: string }; // 札の賭け（相性は投げるまで分からない）
@@ -243,10 +248,12 @@ export type StartKit = {
   spareTorches: number;
   /** 火油の瓶（帳場で買う。持ち越し可） */
   fireOil: number;
-  /** 手持ちの得物（先頭が最良）。空ならギルドの標準（傷んだ短剣）が支給される */
+  /** 手持ちの得物（先頭が手にしているもの）。空ならギルドの標準（傷んだ短剣）が支給される */
   weapons: WeaponGear[];
   /** 着ている鎧。null ならギルドの標準（革鎧）が支給される */
   armor: ArmorGear | null;
+  /** 背に括った予備の鎧 */
+  armorSpare?: ArmorGear | null;
   talismans: Record<string, number>;
 };
 
@@ -259,6 +266,7 @@ export const BASE_KIT: StartKit = {
   fireOil: 0,
   weapons: [{ kind: 'dagger', wear: 45 }], // 傷んだ短剣。丸腰で潜る冒険者はいない
   armor: { kind: 'leather', wear: 10 },
+  armorSpare: null,
   talismans: {},
 };
 
@@ -281,6 +289,7 @@ function mergeKit(kit?: StartKit): StartKit {
   }
   const weapons = kit.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w }));
   weapons.sort((a, b) => (weaponBetter(a, b) ? -1 : 1));
+  weapons.splice(WEAPON_CAP); // 手＋腰2の上限
   return {
     potions,
     food: Math.max(BASE_KIT.food, kit.food),
@@ -289,6 +298,7 @@ function mergeKit(kit?: StartKit): StartKit {
     fireOil: Math.max(BASE_KIT.fireOil, kit.fireOil ?? 0),
     weapons: weapons.length > 0 ? weapons : baseWeapons,
     armor: kit.armor ? { ...kit.armor } : baseArmor,
+    armorSpare: kit.armorSpare ? { ...kit.armorSpare } : null,
     talismans: { ...kit.talismans },
   };
 }
@@ -313,6 +323,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       hasteTurns: 0,
       weapons: k.weapons,
       armor: k.armor,
+      armorSpare: k.armorSpare ?? null,
       hasTreasure: false,
       fireOil: k.fireOil,
       gems: {},
@@ -341,6 +352,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     counted: false,
     visitedFloors: new Set([0]),
     respawnSeq: 0,
+    dropSeq: 0,
   };
 
   state.knowledge[0].walked.add(key(state.pos));
@@ -702,6 +714,11 @@ export function availableActions(state: GameState): Action[] {
     (e) => e.alive && !e.dormant && state.visibleNow.has(key(e.pos)),
   );
   if (!state.counted && !enemyInSight) actions.push({ type: 'checkPack' });
+  // 持ち替え・着替え（拾っただけでは手も体も変わらない——替えるのは自分の判断）
+  for (let i = 1; i < state.player.weapons.length; i++) {
+    actions.push({ type: 'equipWeapon', index: i });
+  }
+  if (state.player.armorSpare) actions.push({ type: 'equipArmor' });
   if (here?.kind === 'stairsDown') actions.push({ type: 'descend' });
   if (here?.kind === 'stairsUp' && floor.depth > 1) actions.push({ type: 'ascend' });
   if (here?.kind === 'stairsUp' && floor.depth === 1) actions.push({ type: 'escape' });
@@ -1132,33 +1149,80 @@ function wearWeapon(state: GameState, amount: number, events: EventLine[]): void
   }
 }
 
-/** 得物を手に入れる。今のものより良ければ持ち替え、劣るなら予備として携える */
+/** 得物を床に置いていく（拾い直せる。マップには * で残る） */
+function dropWeaponHere(state: GameState, w: WeaponGear): void {
+  state.dropSeq++;
+  currentFloor(state).items.push({
+    id: `drop-w${state.dropSeq}`,
+    kind: 'weapon',
+    name: weaponWord(w),
+    pos: { ...state.pos },
+    taken: false,
+    weaponGear: w,
+  });
+}
+
+/** 鎧を床に置いていく（拾い直せる） */
+function dropArmorHere(state: GameState, a: ArmorGear): void {
+  state.dropSeq++;
+  currentFloor(state).items.push({
+    id: `drop-a${state.dropSeq}`,
+    kind: 'armor',
+    name: armorShortWord(a),
+    pos: { ...state.pos },
+    taken: false,
+    armorGear: a,
+  });
+}
+
+/**
+ * 得物を手に入れる。手にしている得物は替えない——持ち替えはプレイヤーの選択
+ * （愛用の一本が勝手にベンチへ下がらない）。腰が塞がっていれば一番劣る予備を置いていく
+ */
 function gainWeapon(state: GameState, w: WeaponGear, events: EventLine[], lead: string): void {
   const p = state.player;
-  const current = p.weapons[0];
-  addWeapon(p.weapons, w);
-  if (!current || weaponBetter(w, current)) {
-    events.push(good(`${lead}${weaponWord(w)}だ。得物を持ち替える。`));
-  } else {
-    events.push(good(`${lead}${weaponWord(w)}——今の得物には劣るが、予備として腰に差した。`));
+  if (p.weapons.length === 0) {
+    p.weapons.push(w);
+    events.push(good(`${lead}${weaponWord(w)}だ。素手よりずっといい——迷わず手に取る。`));
+    return;
+  }
+  p.weapons.push(w);
+  events.push(good(`${lead}${weaponWord(w)}だ。腰に差した。`));
+  if (p.weapons.length > WEAPON_CAP) {
+    // 手の得物（先頭）は置かない。腰の中で一番劣るものを置いていく
+    let worst = 1;
+    for (let i = 2; i < p.weapons.length; i++) {
+      if (weaponBetter(p.weapons[worst], p.weapons[i])) worst = i;
+    }
+    const [dropped] = p.weapons.splice(worst, 1);
+    dropWeaponHere(state, dropped);
+    events.push(`腰はもう塞がっている。${weaponWord(dropped)}をその場に置いていった。`);
   }
 }
 
-/** 鎧を手に入れる。守りが上なら着替える（着ていたものは置いていく） */
+/** 鎧を手に入れる。着替えはプレイヤーの選択。背の予備が塞がっていれば、劣る方を置いていく */
 function gainArmor(state: GameState, a: ArmorGear, events: EventLine[], lead: string): void {
   const p = state.player;
-  if (armorGuard(a) > armorGuard(p.armor)) {
-    const old = p.armor;
+  if (!p.armor) {
     p.armor = a;
+    events.push(good(`${lead}${armorShortWord(a)}だ。身を守るものがなかった——ありがたく着る。`));
+    return;
+  }
+  if (!p.armorSpare) {
+    p.armorSpare = a;
+    events.push(good(`${lead}${armorShortWord(a)}だ。背に括った。`));
+    return;
+  }
+  if (armorGuard(a) > armorGuard(p.armorSpare)) {
+    const old = p.armorSpare;
+    p.armorSpare = a;
+    dropArmorHere(state, old);
     events.push(
-      good(
-        old
-          ? `${lead}${ARMOR_DATA[a.kind].name}だ。${ARMOR_DATA[old.kind].name}を脱ぎ捨てて着替えた。`
-          : `${lead}${ARMOR_DATA[a.kind].name}だ。ありがたく身に着ける。`,
-      ),
+      good(`${lead}${armorShortWord(a)}だ。見劣りする${armorShortWord(old)}を置き、こちらを背に括った。`),
     );
   } else {
-    events.push(`${lead}${ARMOR_DATA[a.kind].name}——だが今の守りの方が上だ。置いていく。`);
+    dropArmorHere(state, a);
+    events.push(`${lead}${armorShortWord(a)}——だが背の予備の方が上等だ。置いていく。`);
   }
 }
 
@@ -1583,29 +1647,22 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
       if (item.broken) {
         events.push('剣だ——だが手に取ると、刃は錆びて根元から折れた。使い物にならない。');
       } else {
-        gainWeapon(
-          state,
-          {
-            kind: 'sword',
-            wear: 25 + Math.floor(state.rng.next() * 35),
-            bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
-          },
-          events,
-          '床に落ちていたのは',
-        );
+        // 自分で置いていった得物は実体ごと拾い直せる
+        const gear = item.weaponGear ?? {
+          kind: 'sword' as const,
+          wear: 25 + Math.floor(state.rng.next() * 35),
+          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+        };
+        gainWeapon(state, gear, events, item.weaponGear ? '置かれていたのは' : '床に落ちていたのは');
       }
     } else if (item.kind === 'armor') {
-      // 打ち捨てられた鎧: 拾ってみるまで質は分からない
-      gainArmor(
-        state,
-        {
-          kind: state.rng.next() < 0.65 ? 'leather' : 'chain',
-          wear: 20 + Math.floor(state.rng.next() * 45),
-          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
-        },
-        events,
-        '土埃を払うと、それは',
-      );
+      // 打ち捨てられた鎧: 拾ってみるまで質は分からない（自分で置いたものは実体ごと）
+      const gear = item.armorGear ?? {
+        kind: state.rng.next() < 0.65 ? ('leather' as const) : ('chain' as const),
+        wear: 20 + Math.floor(state.rng.next() * 45),
+        bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+      };
+      gainArmor(state, gear, events, item.armorGear ? '置かれていたのは' : '土埃を払うと、それは');
     }
   }
 }
@@ -1943,6 +2000,30 @@ function doCheckPack(state: GameState, events: EventLine[]): void {
   advanceTurn(state, events, 0.5, 0.5);
 }
 
+/** 腰の得物に持ち替える。手にしていたものは腰に戻る */
+function doEquipWeapon(state: GameState, index: number, events: EventLine[]): void {
+  const p = state.player;
+  const w = p.weapons[index];
+  if (!w) return;
+  p.weapons.splice(index, 1);
+  p.weapons.unshift(w);
+  events.push(`${weaponWord(w)}を手に馴染ませる。`);
+  advanceTurn(state, events, 0.8, 0.8);
+}
+
+/** 背の予備の鎧に着替える。着ていたものは背に括り直す */
+function doEquipArmor(state: GameState, events: EventLine[]): void {
+  const p = state.player;
+  if (!p.armorSpare) return;
+  const worn = p.armor;
+  p.armor = p.armorSpare;
+  p.armorSpare = worn;
+  events.push(
+    `${armorShortWord(p.armor)}に着替えた。${worn ? `${armorShortWord(worn)}は背に括り直す。` : ''}`,
+  );
+  advanceTurn(state, events, 1.5, 1);
+}
+
 /** 休息で戻せる体調の上限。深い傷は迷宮の中では塞がらない（薬と泉だけが超えられる） */
 const REST_CAP = 70;
 
@@ -2158,6 +2239,12 @@ export function step(state: GameState, action: Action): EventLine[] {
       break;
     case 'checkPack':
       doCheckPack(state, events);
+      break;
+    case 'equipWeapon':
+      doEquipWeapon(state, action.index, events);
+      break;
+    case 'equipArmor':
+      doEquipArmor(state, events);
       break;
     case 'drinkPotion':
       doDrinkPotion(state, action.kind, events);

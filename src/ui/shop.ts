@@ -2,6 +2,7 @@
 // 買った品は carryover（次の支度）に積まれ、ギルドの標準を下回る買い物は
 // 標準ぶんに上乗せされる（mergeKit の「多い方を採る」で買い物が消えないように）。
 
+import { WEAPON_CAP } from '../core/gear';
 import type { StartKit } from '../core/state';
 import { BASE_KIT } from '../core/state';
 
@@ -12,6 +13,8 @@ export type ShopItem = {
   /** 帳場の一言 */
   note: string;
   apply(kit: StartKit): void;
+  /** 買えない事情があるか（例: 腰の得物が上限）。省略時は常に買える */
+  canBuy?(kit: StartKit): boolean;
 };
 
 /** carryover が空の時の器。ギルドの標準そのもの（この上に買い物を積む） */
@@ -114,6 +117,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     apply(kit) {
       kit.weapons.push({ kind: 'sword', wear: 10 });
     },
+    canBuy(kit) {
+      return kit.weapons.length < WEAPON_CAP;
+    },
   },
   {
     id: 'dagger',
@@ -122,6 +128,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     note: '替えの一本。折れた時に効いてくる。',
     apply(kit) {
       kit.weapons.push({ kind: 'dagger', wear: 10 });
+    },
+    canBuy(kit) {
+      return kit.weapons.length < WEAPON_CAP;
     },
   },
   {
@@ -150,5 +159,23 @@ export const SHOP_ITEMS: ShopItem[] = [
     apply(kit) {
       kit.weapons.push({ kind: 'fine', wear: 5 });
     },
+    canBuy(kit) {
+      return kit.weapons.length < WEAPON_CAP;
+    },
   },
 ];
+
+/** 整備費: 持ち帰った装備の傷みの合計 × 0.1（切り上げ）。直せるのは地上だけ */
+export function repairFee(kit: StartKit | null): number {
+  if (!kit) return 0;
+  const gear = [...kit.weapons, ...(kit.armor ? [kit.armor] : []), ...(kit.armorSpare ? [kit.armorSpare] : [])];
+  const totalWear = gear.reduce((s, g) => s + g.wear, 0);
+  return Math.ceil(totalWear * 0.1);
+}
+
+/** 整備の実行: 傷みをすべて新品同様に戻す */
+export function repairAll(kit: StartKit): void {
+  for (const w of kit.weapons) w.wear = 0;
+  if (kit.armor) kit.armor.wear = 0;
+  if (kit.armorSpare) kit.armorSpare.wear = 0;
+}

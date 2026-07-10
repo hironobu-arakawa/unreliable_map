@@ -7,6 +7,7 @@
 
 import { SILENT_WELL } from '../src/core/character';
 import { confidenceLabel } from '../src/core/confidence';
+import { armorGuard, weaponBetter } from '../src/core/gear';
 import { enemyAt, featureAt, generateInstance, isConnected, itemAt } from '../src/core/generate';
 import { applyHearsay } from '../src/core/hearsay';
 import { mulberry32, hashSeed } from '../src/core/rng';
@@ -188,6 +189,16 @@ function autoplay(seed: number): BotResult {
       const p = state.player;
       const here = actions;
       const has = (t: Action['type']) => here.find((a) => a.type === t);
+      // 自動装備が廃止されたので、良い得物・鎧を拾っていたら持ち替える
+      const betterIdx = p.weapons.findIndex((w, i) => i > 0 && weaponBetter(w, p.weapons[0]));
+      if (betterIdx > 0) {
+        step(state, { type: 'equipWeapon', index: betterIdx });
+        continue;
+      }
+      if (p.armorSpare && armorGuard(p.armorSpare) > armorGuard(p.armor)) {
+        step(state, { type: 'equipArmor' });
+        continue;
+      }
       const potionActs = here.filter(
         (a): a is Extract<Action, { type: 'drinkPotion' }> => a.type === 'drinkPotion',
       );
