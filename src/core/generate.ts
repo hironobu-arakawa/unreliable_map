@@ -156,6 +156,57 @@ export const TALISMAN_PATTERNS = ['渦', '三ツ目', '鱗紋', '月牙', '雷�
 /** 札の効き方の系統。ランごとに模様へ割り当てられる */
 export const TALISMAN_EFFECTS: readonly TalismanEffect[] = ['burn', 'slow', 'sleep', 'haste'];
 
+/**
+ * 敵を1体作る（初期配置と、大地の編み直しによる再湧きの両方で使う）。
+ * v0.9: 持ち物は7割——手ぶらの敵を倒しても得るものはない。
+ * 「奴は何かを運んでいる」という記録・気配が、狩る相手を選ぶ理由になる
+ */
+export function makeEnemy(
+  character: DungeonCharacter,
+  depth: number,
+  maxDepth: number,
+  rng: RNG,
+  pos: Vec,
+  id: string,
+): Entity {
+  const b = character.biases;
+  const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
+  const kind: EnemyKind =
+    rng.next() < b.metallicEnemyRate ? 'metallic' : pick(rng, ['beast', 'shade'] as const);
+  // 深いほど強い。宝の眠る最深階の敵は、生半可な支度では死の気配になる
+  const strength = Math.min(
+    0.95,
+    Math.max(0.1, 0.22 + depthFrac * 0.58 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
+  );
+  // 深い階の敵は光るものを呑んでいることがある（挑む動機の上積み）
+  const gemCarryP = 0.05 + depthFrac * 0.12;
+  const carry =
+    rng.next() < 0.3
+      ? ('none' as const)
+      : rng.next() < gemCarryP
+        ? ('gem' as const)
+        : kind === 'metallic'
+          ? rng.next() < b.rewardWeaponBias
+            ? ('weapon' as const)
+            : ('potion' as const)
+          : kind === 'beast'
+            ? ('food' as const)
+            : ('potion' as const);
+  return {
+    id,
+    kind,
+    name: pick(rng, ENEMY_NAMES[kind]),
+    pos,
+    strength,
+    alive: true,
+    moveEvery: kind === 'metallic' ? 2 : 1,
+    chasing: false,
+    lastSeen: null,
+    lostTurns: 0,
+    carry,
+  };
+}
+
 function generateFloor(
   character: DungeonCharacter,
   depth: number,
@@ -316,44 +367,11 @@ function generateFloor(
   }
 
   // 敵: 密度は低め・一体ごとの危険度は高め（性格）。金属系は重く遅い＝走れば振り切れる
-  // 必ず何かを持っている（挑む動機。持ち物は気配・記録のヒント対象になる）
   const enemyCount = Math.max(1, Math.round(b.enemyDensity * 6 + rng.next() * 0.9));
   for (let i = 0; i < enemyCount; i++) {
     const p = takeFreeCell(floor, cells, used);
     if (!p) break;
-    const kind: EnemyKind =
-      rng.next() < b.metallicEnemyRate ? 'metallic' : pick(rng, ['beast', 'shade'] as const);
-    // 深いほど強い。宝の眠る最深階の敵は、生半可な支度では死の気配になる
-    const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
-    const strength = Math.min(
-      0.95,
-      Math.max(0.1, 0.22 + depthFrac * 0.58 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
-    );
-    // 深い階の敵は光るものを呑んでいることがある（挑む動機の上積み）
-    const gemCarryP = 0.05 + (1 - upperness) * 0.12;
-    const carry =
-      rng.next() < gemCarryP
-        ? ('gem' as const)
-        : kind === 'metallic'
-          ? rng.next() < b.rewardWeaponBias
-            ? ('weapon' as const)
-            : ('potion' as const)
-          : kind === 'beast'
-            ? ('food' as const)
-            : ('potion' as const);
-    floor.entities.push({
-      id: `e${depth}-${i}`,
-      kind,
-      name: pick(rng, ENEMY_NAMES[kind]),
-      pos: p,
-      strength,
-      alive: true,
-      moveEvery: kind === 'metallic' ? 2 : 1,
-      chasing: false,
-      lastSeen: null,
-      lostTurns: 0,
-      carry,
-    });
+    floor.entities.push(makeEnemy(character, depth, maxDepth, rng, p, `e${depth}-${i}`));
   }
 
   // アイテム: 糧食は各階確実＋ときどき2つ（マップ拡大に合わせた消耗予算）、薬はときどき、武器は中層に性格次第で
@@ -406,6 +424,19 @@ function generateFloor(
   if (depth === midDepth && rng.next() < b.rewardWeaponBias) {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.items.push({ id: `i${depth}-weapon`, kind: 'weapon', name: '古びた剣', pos: p, taken: false });
+  }
+  // 打ち捨てられた鎧: 深い階にときどき転がっている（先に潜った誰かの、脱ぎ捨てた形見だ）
+  if (depth >= 2 && rng.next() < 0.12) {
+    const p = takeFreeCell(floor, cells, used);
+    if (p) {
+      floor.items.push({
+        id: `i${depth}-armor`,
+        kind: 'armor',
+        name: '打ち捨てられた鎧',
+        pos: p,
+        taken: false,
+      });
+    }
   }
   // 宝石: 深い階の土にときどき埋もれている
   {

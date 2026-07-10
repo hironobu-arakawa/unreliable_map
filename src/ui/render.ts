@@ -161,6 +161,13 @@ function renderClaimsHtml(state: GameState): string {
   // 手がかりは文書の見出しに付く: 同じ紙に書かれた行は、同じ目で疑える。
   const relevant = state.claims.filter((c) => c.floorDepth === floor.depth || c.floorDepth === 0);
   const parts: string[] = [];
+  // 酒場の噂: 穴の性格について聞いた話。潜行中いつでも読み返せる一枚
+  const rumors = state.instance.character.traitRumors;
+  if (rumors.length > 0) {
+    const head = `<div class="memo-head">酒場の噂<span class="meta">——聞いた話の寄せ集めだ。誰も真偽は請け負わない</span></div>`;
+    const body = rumors.map((r) => `<li>${escapeHtml(r)}</li>`).join('');
+    parts.push(`<li class="memo">${head}<ul class="memo-body">${body}</ul></li>`);
+  }
   for (const memo of state.memos) {
     const lines = relevant.filter((c) => c.memoId === memo.id);
     if (lines.length === 0) continue;
@@ -249,8 +256,10 @@ function renderDebug(state: GameState): string {
       .map(([pt, l]) => `${pt}→系統:${l.effect}/効く:${l.strongVs}/逆:${l.backfireVs}`)
       .join(' ')} 石=${state.player.stones} 札所持=${JSON.stringify(state.player.talismans)}`,
   );
+  const gearTag = (kind: string, wear: number, bonus?: number) =>
+    `${kind}${bonus ? (bonus > 0 ? `+${bonus}` : bonus) : ''}:${wear.toFixed(0)}`;
   lines.push(
-    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? `${p.armor.kind}:${p.armor.wear.toFixed(0)}` : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => `${w.kind}:${w.wear.toFixed(0)}`).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
+    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? gearTag(p.armor.kind, p.armor.wear, p.armor.bonus) : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => gearTag(w.kind, w.wear, w.bonus)).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
   );
   if (state.pending) {
     const a = state.pending.assessment;

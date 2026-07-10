@@ -107,7 +107,7 @@ export type Entity = {
   sleepTurns?: number;
 };
 
-export type ItemKind = 'potion' | 'food' | 'weapon' | 'stone' | 'talisman' | 'gem';
+export type ItemKind = 'potion' | 'food' | 'weapon' | 'armor' | 'stone' | 'talisman' | 'gem';
 
 /** 宝石の種類。持ち帰ればギルドの帳場が銀貨に換えてくれる（死ねば大地に還る） */
 export type GemKind = 'garnet' | 'moonstone' | 'sapphire';
@@ -252,11 +252,15 @@ export type Claim = {
 export type WeaponKind = 'dagger' | 'sword' | 'fine';
 export type ArmorKind = 'leather' | 'chain';
 
-/** 得物。傷み（wear）は打ち合いで進み、100で折れる */
-export type WeaponGear = { kind: WeaponKind; wear: number };
+/**
+ * 得物。傷み（wear）は打ち合いで進み、100で折れる。
+ * bonus は拵えの出来（-2〜+3。マイナスはなまくら）。拵えは見れば分かる観測事実なので
+ * 「剣+2」と数字で表示してよい（憲法5の対象は内部確率であって、観測できる事実ではない）。
+ */
+export type WeaponGear = { kind: WeaponKind; wear: number; bonus?: number };
 
-/** 鎧。傷みは被弾で進み、100で体をなさなくなる */
-export type ArmorGear = { kind: ArmorKind; wear: number };
+/** 鎧。傷みは被弾で進み、100で体をなさなくなる。直す手立てはない——買い替えるか、拾い替える */
+export type ArmorGear = { kind: ArmorKind; wear: number; bonus?: number };
 
 // ---- プレイヤー状態 ----
 

@@ -25,11 +25,28 @@ import {
   type Approacher,
 } from './combat';
 import { describeGems, GEM_DATA, rollGemKind } from './economy';
-import { addWeapon, ARMOR_DATA, armorGuard, armorWord, weaponBetter, weaponWord } from './gear';
+import {
+  addWeapon,
+  ARMOR_DATA,
+  armorGuard,
+  armorWord,
+  rollGearBonus,
+  weaponBetter,
+  weaponWord,
+} from './gear';
 export { KIND_WORD, POTION_NAMES };
 export { armorWord, weaponWord } from './gear';
 import { assessDanger, type DangerAssessment } from './danger';
-import { enemyAt, featureAt, generateInstance, isWalkable, itemAt, tileAt } from './generate';
+import {
+  enemyAt,
+  featureAt,
+  floorCells,
+  generateInstance,
+  isWalkable,
+  itemAt,
+  makeEnemy,
+  tileAt,
+} from './generate';
 import { applyHearsay } from './hearsay';
 import { resolveInfo } from './resolve';
 import type { RNG } from './rng';
@@ -181,6 +198,10 @@ export type GameState = {
   talismanKnowledge: Record<string, Record<string, 'strong' | 'backfire' | 'neutral'>>;
   /** 荷を検めたか。一度数えれば、以後の増減は頭に入っている（個数表示になる） */
   counted: boolean;
+  /** 一度でも足を踏み入れた階（floorIndex）。再訪時は大地の編み直しで敵が湧き直す */
+  visitedFloors: Set<number>;
+  /** 再湧きした敵のID連番 */
+  respawnSeq: number;
 };
 
 export type Action =
@@ -318,12 +339,14 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     senseSeq: 0,
     talismanKnowledge: {},
     counted: false,
+    visitedFloors: new Set([0]),
+    respawnSeq: 0,
   };
 
   state.knowledge[0].walked.add(key(state.pos));
   const events: EventLine[] = [
     `あなたは「${character.name}」の入口に立っている。`,
-    ...character.traitRumors.map((r) => `${r}（——酒場で聞いた話だ）`),
+    '酒場で聞いた噂は、手元の記録に書き留めてある。',
   ];
   look(state, events);
   state.events = events;
@@ -860,7 +883,7 @@ function sideAttack(state: GameState, e: Entity, events: EventLine[]): void {
     const dmg = rollEnemyDamage(e.strength, profile, state.rng);
     p.condition -= dmg;
     events.push(bad(`横合いから${e.name}の一撃が飛んできた。`));
-    wearArmor(state, 3 + Math.floor(state.rng.next() * 5), events);
+    wearArmor(state, 2 + Math.floor(state.rng.next() * 3), events);
     if (p.condition <= 0) {
       // 刃を合わせた後なら戦死として計測。睨み合い・投げの最中なら挑戦には数えない
       const pending = state.pending;
@@ -1075,6 +1098,12 @@ function resolveThrow(
 
 // ---- 装備の傷みと入手 ----
 
+/** いまいる階の深さ割合（0=最上階、1=最深階）。拾い物の拵えの分布に効く */
+function gearDepthFrac(state: GameState): number {
+  const maxDepth = state.instance.floors.length;
+  return maxDepth > 1 ? (currentFloor(state).depth - 1) / (maxDepth - 1) : 0;
+}
+
 /** 鎧が打撃を受けて傷む。100で体をなさなくなる */
 function wearArmor(state: GameState, amount: number, events: EventLine[]): void {
   const p = state.player;
@@ -1159,7 +1188,11 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
     case 'weapon':
       gainWeapon(
         state,
-        { kind: 'sword', wear: 15 + Math.floor(state.rng.next() * 45) },
+        {
+          kind: 'sword',
+          wear: 15 + Math.floor(state.rng.next() * 45),
+          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+        },
         events,
         '奴が引きずっていたのは',
       );
@@ -1176,11 +1209,12 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
     case 'gem':
       gainGem(state, events, '骸の懐から転がり出たのは');
       break;
+    case 'none':
+      events.push('骸を検めたが、何も持っていなかった。');
+      return;
     case 'treasure':
       p.hasTreasure = true;
       events.push(good('骸の腕の中から、布に包まれた重みを取り上げた。宝だ。あとは、生きて帰るだけだ。'));
-      break;
-    case 'none':
       break;
   }
 }
@@ -1240,7 +1274,11 @@ function resolveSteal(state: GameState, events: EventLine[]): void {
       case 'weapon':
         gainWeapon(
           state,
-          { kind: 'sword', wear: 15 + Math.floor(state.rng.next() * 45) },
+          {
+            kind: 'sword',
+            wear: 15 + Math.floor(state.rng.next() * 45),
+            bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+          },
           events,
           '眠る相手が抱えていたのは',
         );
@@ -1353,7 +1391,7 @@ function resolveEngage(state: GameState, events: EventLine[]): void {
   if (r.playerHit) {
     p.condition -= r.playerDamage;
     events.push(woundWord(r.playerDamage));
-    wearArmor(state, 4 + Math.floor(state.rng.next() * 6), events);
+    wearArmor(state, 2 + Math.floor(state.rng.next() * 4), events);
     if (p.condition <= 0) {
       recordFightEnd(state, 'death');
       die(
@@ -1547,11 +1585,27 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
       } else {
         gainWeapon(
           state,
-          { kind: 'sword', wear: 25 + Math.floor(state.rng.next() * 35) },
+          {
+            kind: 'sword',
+            wear: 25 + Math.floor(state.rng.next() * 35),
+            bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+          },
           events,
           '床に落ちていたのは',
         );
       }
+    } else if (item.kind === 'armor') {
+      // 打ち捨てられた鎧: 拾ってみるまで質は分からない
+      gainArmor(
+        state,
+        {
+          kind: state.rng.next() < 0.65 ? 'leather' : 'chain',
+          wear: 20 + Math.floor(state.rng.next() * 45),
+          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+        },
+        events,
+        '土埃を払うと、それは',
+      );
     }
   }
 }
@@ -1733,7 +1787,11 @@ function doOpen(state: GameState, events: EventLine[]): void {
     case 'weapon':
       gainWeapon(
         state,
-        { kind: 'sword', wear: 10 + Math.floor(state.rng.next() * 35) },
+        {
+          kind: 'sword',
+          wear: 10 + Math.floor(state.rng.next() * 35),
+          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+        },
         events,
         '箱の中にあったのは油紙に包まれた',
       );
@@ -1741,7 +1799,11 @@ function doOpen(state: GameState, events: EventLine[]): void {
     case 'armor':
       gainArmor(
         state,
-        { kind: 'chain', wear: 15 + Math.floor(state.rng.next() * 40) },
+        {
+          kind: 'chain',
+          wear: 15 + Math.floor(state.rng.next() * 40),
+          bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+        },
         events,
         '箱の底に畳まれていたのは',
       );
@@ -1896,9 +1958,9 @@ function doRest(state: GameState, events: EventLine[]): void {
     events.push('短く休んだ。腹の虫が鳴って、眠りは浅い。');
   } else {
     p.condition = Math.min(REST_CAP, p.condition + 10);
-    events.push(good('壁に背を預け、短く休んだ。傷の手当てと、鎧の紐を締め直す。'));
+    events.push(good('壁に背を預け、短く休んだ。傷に当て布をし、水を口に含む。'));
   }
-  if (p.armor) p.armor.wear = Math.max(0, p.armor.wear - 4); // 応急の手入れ
+  // 鎧は直せない——裂けた革は裂けたままだ。管理は買い替えと拾い替えで行う
   advanceTurn(state, events, 3, 2);
 }
 
@@ -1987,6 +2049,44 @@ function doEat(state: GameState, events: EventLine[]): void {
   advanceTurn(state, events, 0, 0.5);
 }
 
+/**
+ * 大地の編み直し: 一度離れた階に戻ると、空いた巣にまた何かが棲みついていることがある。
+ * 「ひとつ前の階へ戻って休む」は選べるが、無料の安全地帯ではなくなる
+ */
+function maybeReweave(state: GameState, events: EventLine[]): void {
+  if (!state.visitedFloors.has(state.floorIndex)) {
+    state.visitedFloors.add(state.floorIndex);
+    return;
+  }
+  if (state.rng.next() >= 0.65) return;
+  const floor = currentFloor(state);
+  const maxDepth = state.instance.floors.length;
+  const depthFrac = gearDepthFrac(state);
+  const count = depthFrac > 0.5 && state.rng.next() < 0.25 ? 2 : 1;
+  let spawned = 0;
+  for (const c of shuffle(state.rng, floorCells(floor))) {
+    if (spawned >= count) break;
+    if (chebDist(c, state.pos) < 6) continue; // 目の前には湧かない（視界は嘘をつかない）
+    if (!isWalkable(floor, c) || featureAt(floor, c) || enemyAt(floor, c) || itemAt(floor, c))
+      continue;
+    state.respawnSeq++;
+    floor.entities.push(
+      makeEnemy(
+        state.instance.character,
+        floor.depth,
+        maxDepth,
+        state.rng,
+        c,
+        `e${floor.depth}-r${state.respawnSeq}`,
+      ),
+    );
+    spawned++;
+  }
+  if (spawned > 0) {
+    events.push('空気が前と違う。大地は編み直され、空いた巣にはまた何かが棲みつく。');
+  }
+}
+
 function doDescend(state: GameState, events: EventLine[]): void {
   state.floorIndex++;
   state.deepestVisited = Math.max(state.deepestVisited, state.floorIndex + 1);
@@ -1997,6 +2097,7 @@ function doDescend(state: GameState, events: EventLine[]): void {
   know.walked.add(key(state.pos));
   events.push(`階段を降りる。地下${floor.depth}階。空気が重くなった。`);
   state.senses = state.senses.filter((s) => !s.verified && s.floorDepth === floor.depth);
+  maybeReweave(state, events);
   advanceTurn(state, events, 1.5, 2);
   if (state.phase === 'explore') look(state, events);
 }
@@ -2017,6 +2118,7 @@ function doAscend(state: GameState, events: EventLine[]): void {
   state.pos = { ...down.pos };
   state.knowledge[state.floorIndex].walked.add(key(state.pos));
   events.push(`地下${upper.depth}階に戻ってきた。`);
+  maybeReweave(state, events);
   advanceTurn(state, events, 1.5, 2);
   if (state.player.condition <= 0) {
     die(state, events, '崩れた階段が、最後の体力を奪った。');
