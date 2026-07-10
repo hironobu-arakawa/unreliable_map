@@ -155,15 +155,32 @@ function renderSensesHtml(state: GameState): string {
 
 function renderClaimsHtml(state: GameState): string {
   const floor = currentFloor(state);
-  // この階の記録＋場所に紐付かない知識。信頼度は字の乱れ・紙の状態などの
-  // 手がかりで伝える——数字もラベルも出さない（§9.1・憲法5）
-  const claims = state.claims.filter((c) => c.floorDepth === floor.depth || c.floorDepth === 0);
-  return claims
-    .map((c) => {
-      const done = c.verified ? '<span class="ok">〔検証済み〕</span>' : '';
-      return `<li>${escapeHtml(c.text)}<span class="meta">（${SOURCE_NAMES[c.source]}——${escapeHtml(c.cue)}）</span>${done}</li>`;
-    })
-    .join('');
+  // この階の記録＋場所に紐付かない知識を「一枚の紙」単位で見せる。
+  // 信頼度は字の乱れ・紙の状態などの手がかりで伝える——数字もラベルも出さない（§9.1・憲法5）。
+  // 手がかりは文書の見出しに付く: 同じ紙に書かれた行は、同じ目で疑える。
+  const relevant = state.claims.filter((c) => c.floorDepth === floor.depth || c.floorDepth === 0);
+  const parts: string[] = [];
+  for (const memo of state.memos) {
+    const lines = relevant.filter((c) => c.memoId === memo.id);
+    if (lines.length === 0) continue;
+    const head = `<div class="memo-head">${SOURCE_NAMES[memo.source]}<span class="meta">——${escapeHtml(memo.cue)}</span></div>`;
+    const body = lines
+      .map((c) => {
+        const done = c.verified ? '<span class="ok">〔検証済み〕</span>' : '';
+        return `<li>${escapeHtml(c.text)}${done}</li>`;
+      })
+      .join('');
+    parts.push(`<li class="memo">${head}<ul class="memo-body">${body}</ul></li>`);
+  }
+  // 文書に属さない記録（保険。現行の生成では発生しない）
+  for (const c of relevant) {
+    if (c.memoId) continue;
+    const done = c.verified ? '<span class="ok">〔検証済み〕</span>' : '';
+    parts.push(
+      `<li>${escapeHtml(c.text)}<span class="meta">（${SOURCE_NAMES[c.source]}——${escapeHtml(c.cue)}）</span>${done}</li>`,
+    );
+  }
+  return parts.join('');
 }
 
 function renderStatusHtml(state: GameState): string {

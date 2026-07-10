@@ -195,6 +195,26 @@
       .panel li { font-size: 13.5px; line-height: 1.85; margin-bottom: 4px; }
       .panel li .meta { color: var(--ink-faint); font-size: 12px; }
       .panel li .ok { color: var(--ink-dim); font-size: 12px; }
+      /* 手元の記録: 一枚の紙（文書）ごとにまとめる。手がかりは紙の見出しに付く */
+      #claims li.memo {
+        border: 1px solid var(--panel-edge);
+        border-left: 2px solid #4d442e;
+        border-radius: 2px;
+        background: linear-gradient(160deg, #221d13 0%, #1c1811 100%);
+        padding: 8px 12px;
+        margin-bottom: 10px;
+      }
+      #claims .memo-head {
+        color: var(--ink-dim);
+        font-size: 12.5px;
+        letter-spacing: 0.08em;
+        border-bottom: 1px dashed var(--panel-edge);
+        padding-bottom: 4px;
+        margin-bottom: 6px;
+      }
+      #claims ul.memo-body { padding-left: 1em; }
+      #claims ul.memo-body li { list-style: none; text-indent: -1em; padding-left: 1em; }
+      #claims ul.memo-body li::before { content: '・'; color: var(--ink-faint); }
       /* 出来事: 直近が明るく、過去は薄れていく */
       #events li.old1 { opacity: 0.55; }
       #events li.old2 { opacity: 0.32; }

@@ -28,8 +28,8 @@ function check(name: string, ok: boolean, detail = ''): void {
 
 // ---- 1) 再現性 ----
 
-function snapshot(instance: DungeonInstance, claims: Claim[]): string {
-  return JSON.stringify({ floors: instance.floors, claims });
+function snapshot(instance: DungeonInstance, hearsay: { memos: unknown; claims: Claim[] }): string {
+  return JSON.stringify({ floors: instance.floors, memos: hearsay.memos, claims: hearsay.claims });
 }
 
 {
@@ -55,7 +55,7 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
   for (let s = 0; s < N; s++) {
     const seed = hashSeed('consistency', s);
     const inst = generateInstance(SILENT_WELL, seed);
-    const claims = applyHearsay(inst, seed);
+    const { claims } = applyHearsay(inst, seed);
 
     for (const floor of inst.floors) {
       // 崩落を植えても階段↔階段（↔宝箱）の到達性が保たれている
@@ -136,7 +136,7 @@ function snapshot(instance: DungeonInstance, claims: Claim[]): string {
   for (let s = 0; s < N; s++) {
     const seed = hashSeed('hitrate', s);
     const inst = generateInstance(SILENT_WELL, seed);
-    const claims = applyHearsay(inst, seed);
+    const { claims } = applyHearsay(inst, seed);
     for (const c of claims) {
       const label = confidenceLabel(c.internalP);
       const a = (acc[label] ??= { n: 0, hit: 0 });

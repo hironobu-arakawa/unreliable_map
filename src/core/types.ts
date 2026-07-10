@@ -187,13 +187,27 @@ export type ClaimKind =
   | 'lore'; // 札の相性など、場所に紐付かない知識（floorDepth=0で全域扱い）
 
 /**
+ * 記録の文書（メモ）。古地図・生還者のメモ等の「一枚の紙」。
+ * 信頼度の手がかり（紙の状態・字の乱れ）と内部確率は文書に属し、
+ * 中身の各行（Claim）は文書の p で個別に解決される（憲法6: 手がかりは文書の質を語る）。
+ */
+export type Memo = {
+  id: string;
+  source: InfoSource;
+  internalP: number; // 文書としての信頼度 0..1（UIに出さない）
+  cue: string; // 紙の状態・字の乱れなどの物理的手がかり
+};
+
+/**
  * 古地図・メモ・気配などの情報片。
  * internalP はUIに出さない（憲法5）。ラベルは confidence.ts の射影で得る。
  */
 export type Claim = {
   id: string;
   source: InfoSource;
-  internalP: number; // 0..1（UIに出さない）
+  /** 属する文書。気配・見立て（sense）は文書を持たない */
+  memoId?: string;
+  internalP: number; // 0..1（UIに出さない。文書に属する行は文書のpと同値）
   kind: ClaimKind;
   floorDepth: number; // どの階についての情報か
   /** 主張する位置（曖昧化して文章にする。nullなら「この階のどこか」） */

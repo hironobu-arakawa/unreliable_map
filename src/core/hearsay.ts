@@ -20,6 +20,7 @@ import type {
   EnemyKind,
   Floor,
   InfoSource,
+  Memo,
   MissPattern,
   TalismanEffect,
   Vec,
@@ -221,18 +222,27 @@ function chestIsGood(content: string | undefined): boolean {
   return content === 'weapon' || content === 'potion' || content === 'food';
 }
 
+/** 古地図・メモの生成結果。claims は memos のいずれかに属する（memoId） */
+export type Hearsay = { memos: Memo[]; claims: Claim[] };
+
 /**
  * 古地図・生還者メモ・死亡者メモを生成し、当否を解決する。
  * miss の場合は実態に「理由」を植え込む（インスタンスを変異させる）ため、
  * 必ずプレイ開始前・生成パイプラインの一部として呼ぶこと。
+ *
+ * v0.6: 記録は「一枚の紙」（Memo）に束ねる。手がかり（紙の状態・字の乱れ）と
+ * 内部確率は文書に属し、中身の各行は文書の p で個別に解決される。
+ * 同じ乱れた字で書かれた2行は、だいたい同じ割合で当たる——だから紙を読む目が育つ。
  */
-export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[] {
+export function applyHearsay(instance: DungeonInstance, runSeed: number): Hearsay {
   const rng = mulberry32(hashSeed(runSeed, 'hearsay'));
   // 兄弟インスタンス: 同じ性格・別シードの「過去の誰かの潜行」。完全な誤情報の出所
   const sibling = generateInstance(instance.character, hashSeed(runSeed, 'sibling'));
 
+  const memos: Memo[] = [];
   const claims: Claim[] = [];
   let claimNo = 0;
+  let memoNo = 0;
 
   for (const floor of instance.floors) {
     const candidates = shuffle(rng, collectCandidates(rng, floor));
@@ -251,14 +261,34 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
       picked.push(c);
     }
 
-    for (const cand of picked) {
-      claimNo++;
+    // 文書に束ねる: 1枚の紙に1〜2行。信頼度と手がかりは紙に属する
+    const memoOf = new Map<Candidate, Memo>();
+    let cursor = 0;
+    while (cursor < picked.length) {
+      const take = picked.length - cursor >= 2 && rng.next() < 0.55 ? 2 : 1;
+      memoNo++;
       const source: InfoSource = pickWeighted(rng, [
         ['oldMap', 0.45],
         ['survivorNote', 0.3],
         ['deathNote', 0.25],
       ] as const);
       const internalP = drawInternalP(rng, source);
+      const memo: Memo = {
+        id: `m${memoNo}`,
+        source,
+        internalP,
+        cue: drawCue(rng, source, internalP),
+      };
+      memos.push(memo);
+      for (let k = 0; k < take; k++) memoOf.set(picked[cursor + k], memo);
+      cursor += take;
+    }
+
+    for (const cand of picked) {
+      claimNo++;
+      const memo = memoOf.get(cand)!;
+      const source = memo.source;
+      const internalP = memo.internalP;
 
       // §8 解決: roll < p → hold / それ以外 → 外れ方を抽選（resolve.tsの重みに従う）
       const resolution = resolveInfo(rng, internalP, ALLOWED_MISS[cand.kind]);
@@ -412,12 +442,13 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
       claims.push({
         id: `c${claimNo}`,
         source,
+        memoId: memo.id,
         internalP,
         kind: cand.kind,
         floorDepth: floor.depth,
         claimedPos,
         text,
-        cue: drawCue(rng, source, internalP),
+        cue: memo.cue,
         held,
         missPattern,
         actualPos,
@@ -440,15 +471,27 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
   const patterns = Object.keys(instance.talismanLore);
   const loreCount = 1 + (rng.next() < 0.5 ? 1 : 0);
   const kinds: EnemyKind[] = ['metallic', 'beast', 'shade'];
+  const noteMemos = memos.filter((m) => m.source === 'survivorNote' || m.source === 'deathNote');
   for (let i = 0; i < loreCount && patterns.length > 0; i++) {
     claimNo++;
     const pattern = pick(rng, patterns);
     const truth = instance.talismanLore[pattern];
-    const source: InfoSource = pickWeighted(rng, [
-      ['survivorNote', 0.5],
-      ['deathNote', 0.5],
-    ] as const);
-    const internalP = drawInternalP(rng, source);
+    // 手記の端の書き込み: 既存の手記の余白にあるか、独立した走り書きか
+    let memo: Memo;
+    if (noteMemos.length > 0 && rng.next() < 0.6) {
+      memo = pick(rng, noteMemos);
+    } else {
+      memoNo++;
+      const source: InfoSource = pickWeighted(rng, [
+        ['survivorNote', 0.5],
+        ['deathNote', 0.5],
+      ] as const);
+      const internalP = drawInternalP(rng, source);
+      memo = { id: `m${memoNo}`, source, internalP, cue: drawCue(rng, source, internalP) };
+      memos.push(memo);
+    }
+    const source = memo.source;
+    const internalP = memo.internalP;
     const resolution = resolveInfo(rng, internalP, ['misread']);
     const held = resolution.held;
     // 「効く」の主張か「向けるな」の警告か
@@ -473,12 +516,13 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
     claims.push({
       id: `c${claimNo}`,
       source,
+      memoId: memo.id,
       internalP,
       kind: 'lore',
       floorDepth: 0,
       claimedPos: null,
       text,
-      cue: drawCue(rng, source, internalP),
+      cue: memo.cue,
       held,
       missPattern: held ? undefined : 'misread',
       actualPos: null,
@@ -490,5 +534,5 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
     });
   }
 
-  return claims;
+  return { memos, claims };
 }

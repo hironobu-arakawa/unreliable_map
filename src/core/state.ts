@@ -6,6 +6,7 @@ import type {
   DungeonInstance,
   Entity,
   Floor,
+  Memo,
   PlayerState,
   PotionKind,
   Vec,
@@ -135,6 +136,8 @@ export type PendingEncounter = {
 
 export type GameState = {
   instance: DungeonInstance;
+  /** 手元の記録の文書（メモ）。claims は memoId でこれに属する */
+  memos: Memo[];
   claims: Claim[];
   player: PlayerState;
   floorIndex: number; // 0-based
@@ -230,12 +233,13 @@ function mergeKit(kit?: StartKit): StartKit {
 export function newGame(character: DungeonCharacter, runSeed: number, kit?: StartKit): GameState {
   // 生成パイプライン: 地形 → 古地図・噂の解決（地形の最終化を含む）。以後、地形は不変
   const instance = generateInstance(character, runSeed);
-  const claims = applyHearsay(instance, runSeed);
+  const { memos, claims } = applyHearsay(instance, runSeed);
   const k = mergeKit(kit);
 
   const entry = instance.floors[0].features.find((f) => f.kind === 'stairsUp')!;
   const state: GameState = {
     instance,
+    memos,
     claims,
     player: {
       condition: 100,
