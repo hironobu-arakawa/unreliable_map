@@ -170,14 +170,19 @@ function autoplay(seed: number): BotResult {
     let chosen: Action | undefined;
 
     if (state.phase === 'encounter') {
-      // ときどき投げ、あとはランダム寄りに挑む（ラベル別の実リスク計測のため）
-      const throwable = actions.filter(
-        (a) => a.type === 'throwStone' || a.type === 'throwTalisman',
-      );
-      if (throwable.length > 0 && bot.next() < 0.3) {
-        chosen = throwable[Math.floor(bot.next() * throwable.length)];
+      // 一度刃を合わせたら最後まで打ち合う——ラベル＝「戦い抜いた場合」の帯、の計測を保つ
+      if (state.pending!.rounds > 0) {
+        chosen = { type: 'engage' };
       } else {
-        chosen = bot.next() < 0.6 ? { type: 'engage' } : { type: 'retreat' };
+        // ときどき投げ、あとはランダム寄りに挑む（ラベル別の実リスク計測のため）
+        const throwable = actions.filter(
+          (a) => a.type === 'throwStone' || a.type === 'throwTalisman',
+        );
+        if (throwable.length > 0 && bot.next() < 0.3) {
+          chosen = throwable[Math.floor(bot.next() * throwable.length)];
+        } else {
+          chosen = bot.next() < 0.6 ? { type: 'engage' } : { type: 'retreat' };
+        }
       }
     } else {
       const p = state.player;

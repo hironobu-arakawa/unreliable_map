@@ -171,9 +171,18 @@ function run(seed: number, brain: Brain): RunResult {
         step(state, { type: 'engage' });
         continue;
       }
+      const label = state.pending!.assessment.label;
+      // 打ち合いの最中: 形勢を読み直し、死の気配に傾いたら離脱する（ターン制の判断）
+      if (state.pending!.rounds > 0) {
+        if (label === '死の気配') {
+          step(state, { type: 'retreat' });
+        } else {
+          step(state, { type: 'engage' });
+        }
+        continue;
+      }
       // 危険度ラベルを読む: かなり危険/死の気配だけは避ける。それ以下は挑む
       // （逃げ続けても敵は消えない。消耗との天秤で「上位ラベルのみ回避」が上手いプレイ）
-      const label = state.pending!.assessment.label;
       const tooRisky = label === 'かなり危険' || label === '死の気配';
       // 上位ラベル相手には、まず一投で危険度を下げにいく
       if (tooRisky && !state.pending!.thrown) {
@@ -247,7 +256,8 @@ function run(seed: number, brain: Brain): RunResult {
       (e) => e.alive && state.visibleNow.has(key(e.pos)),
     );
     // 休息はまとめて取る: 消耗したら安全な場所で体調が戻るまで（中途半端な体力で戦わない）
-    if (resting && (p.condition >= 80 || p.hunger >= 75 || visibleEnemies.length > 0)) {
+    // 迷宮の休息では深い傷は塞がらない（上限70）ので、そこまで戻れば動く
+    if (resting && (p.condition >= 68 || p.hunger >= 75 || visibleEnemies.length > 0)) {
       resting = false;
     }
     if (!resting && p.condition <= (brain === 'fight' ? 45 : 55) && p.hunger < 70 && visibleEnemies.length === 0) {

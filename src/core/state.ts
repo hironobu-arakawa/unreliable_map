@@ -16,6 +16,7 @@ import type {
 import type { DungeonCharacter } from './types';
 import { KIND_WORD, POTION_DROP, POTION_NAMES } from './character';
 import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
+import { combatProfile, fightRound, HEAVY_LOSS } from './combat';
 import { addWeapon, ARMOR_DATA, armorGuard, armorWord, weaponBetter, weaponWord } from './gear';
 export { KIND_WORD, POTION_NAMES };
 export { armorWord, weaponWord } from './gear';
@@ -122,6 +123,13 @@ export type PendingEncounter = {
   materials: string[];
   /** 先制の一投を使ったか（距離があるうちの一投は一度だけ） */
   thrown: boolean;
+  /** 打ち合いのラウンド数。0 = まだ刃を合わせていない（投げられるのはこの間だけ） */
+  rounds: number;
+  /** 最初に刃を合わせた時の読み（計測§12はこの時点のラベルで行う） */
+  engagedLabel?: string;
+  engagedRisk?: number;
+  /** 打ち合い開始時の体調（勝った時の重傷判定に使う） */
+  conditionAtStart?: number;
 };
 
 
@@ -587,8 +595,8 @@ export function availableActions(state: GameState): Action[] {
   if (state.phase === 'dead' || state.phase === 'escaped') return [];
   if (state.phase === 'encounter') {
     const actions: Action[] = [{ type: 'engage' }, { type: 'retreat' }];
-    // 距離があるうちの一投（一度だけ）。石は安全な削り、札は相性の賭け
-    if (!state.pending!.thrown) {
+    // 距離があるうちの一投（一度だけ・刃を合わせる前だけ）。石は安全な削り、札は相性の賭け
+    if (!state.pending!.thrown && state.pending!.rounds === 0) {
       if (state.player.stones > 0) actions.push({ type: 'throwStone' });
       for (const [pattern, count] of Object.entries(state.player.talismans)) {
         if (count > 0) actions.push({ type: 'throwTalisman', pattern });
@@ -814,7 +822,7 @@ function startEncounter(state: GameState, enemy: Entity, events: EventLine[], le
   if (assessment.factors.length > 0) {
     events.push(`見て取れること——${assessment.factors.join('。')}。`);
   }
-  state.pending = { enemyId: enemy.id, assessment, materials, thrown: false };
+  state.pending = { enemyId: enemy.id, assessment, materials, thrown: false, rounds: 0 };
   state.phase = 'encounter';
 }
 
@@ -1011,80 +1019,130 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
   }
 }
 
-function resolveEngage(state: GameState, events: EventLine[]): void {
+/** 打ち合いで受けた傷の言葉（数字は出さない） */
+function woundWord(dmg: number): EventLine {
+  if (dmg >= 26) return bad('骨まで響く一撃を受けた。');
+  if (dmg >= 14) return bad('浅くない傷を受けた。');
+  return bad('掠り傷を受けた。');
+}
+
+/** 打ち込みの手応えの言葉（削った地力の帯→語は固定） */
+function blowWord(blow: number): string {
+  if (blow >= 0.24) return '深々と刃が入った。';
+  if (blow >= 0.14) return '確かな手応えがあった。';
+  return '刃は浅く滑った。';
+}
+
+/** 戦い終わり（勝ち・戦死）の計測（§12）。ラベルは最初に刃を合わせた時の読み */
+function recordFightEnd(
+  state: GameState,
+  outcome: 'win' | 'wounded' | 'heavy' | 'death',
+): void {
   const pending = state.pending!;
-  const floor = currentFloor(state);
-  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
-  const risk = pending.assessment.internalRisk;
-  const label = pending.assessment.label;
+  recordDanger(state.telemetry, {
+    turn: state.turn,
+    danger_label: pending.engagedLabel ?? pending.assessment.label,
+    internal_risk: pending.engagedRisk ?? pending.assessment.internalRisk,
+    engaged: true,
+    outcome,
+  });
+}
+
+/** 相手が倒れた。戦果の整理と、平時への復帰 */
+function finishFight(state: GameState, events: EventLine[], enemy: Entity): void {
+  const pending = state.pending!;
   const p = state.player;
-
-  const sleeping = (enemy.sleepTurns ?? 0) > 0;
-  events.push(sleeping ? `あなたは眠りこける${enemy.name}に刃を立てた。` : `あなたは${enemy.name}に挑んだ。`);
-  enemy.sleepTurns = 0; // 刃を受ければ、眠りは終わる
-  const roll = state.rng.next();
-  if (roll < risk) {
-    // 死亡か重傷か: リスクが高いほど「重傷で済む」余地が消える。
-    // ラベル帯（§7＝死亡/重傷の合計率）は不変のまま、「死の気配に挑む＝本当に死ぬ」を鋭くする
-    const deathShare = 0.25 + 0.55 * risk;
-    if (state.rng.next() < deathShare) {
-      recordDanger(state.telemetry, {
-        turn: state.turn,
-        danger_label: label,
-        internal_risk: risk,
-        engaged: true,
-        outcome: 'death',
-      });
-      state.pending = pending; // 死亡ログが判断材料を参照する
-      die(
-        state,
-        events,
-        `あなたは「${label}」とみた${enemy.name}に挑み、敗北した。`,
-      );
-      return;
-    }
-    // 重傷: 倒しはしたが深手を負う
-    enemy.alive = false;
-    p.condition -= 40 + Math.floor(state.rng.next() * 15);
-    events.push(bad(`辛くも${enemy.name}を退けた。だが深手を負った。`));
-    // 激しい打ち合いは鎧を裂き、刃を欠けさせる（替えを探す動機）
-    wearArmor(state, 18 + Math.floor(state.rng.next() * 10), events);
-    wearWeapon(state, 22 + Math.floor(state.rng.next() * 18), events);
-    recordDanger(state.telemetry, {
-      turn: state.turn,
-      danger_label: label,
-      internal_risk: risk,
-      engaged: true,
-      outcome: 'heavy',
-    });
-    lootCarry(state, enemy, events);
-  } else {
-    enemy.alive = false;
-    const dmg = 4 + Math.floor(enemy.strength * 14 * state.rng.next());
-    p.condition -= dmg;
-    events.push(`${enemy.name}は動かなくなった。`);
-    events.push(dmg > 10 ? bad('浅くない傷を受けた。') : 'かすり傷で済んだ。');
-    wearArmor(state, 4 + Math.floor(state.rng.next() * 8), events);
-    wearWeapon(state, 3 + Math.floor(state.rng.next() * 6), events);
-    recordDanger(state.telemetry, {
-      turn: state.turn,
-      danger_label: label,
-      internal_risk: risk,
-      engaged: true,
-      outcome: dmg > 10 ? 'wounded' : 'win',
-    });
-    lootCarry(state, enemy, events);
-  }
-
+  const lost = (pending.conditionAtStart ?? p.condition) - p.condition;
+  const outcome = lost >= HEAVY_LOSS ? 'heavy' : lost > 10 ? 'wounded' : 'win';
+  if (outcome === 'heavy') events.push(bad('勝ちはした。だが深手を負った。'));
+  recordFightEnd(state, outcome);
+  lootCarry(state, enemy, events);
   state.pending = null;
   state.phase = 'explore';
-  advanceTurn(state, events, 2, 2);
+  advanceTurn(state, events, 1.5, 1.5);
   if (p.condition <= 0) {
     die(state, events, '戦いの傷が深すぎた。'); // die側で二重死亡を防いでいる
     return;
   }
   processEnemies(state, events); // 戦っている間にも、他の何かは近づいてくる
   if (state.phase === 'explore') look(state, events);
+}
+
+/**
+ * 1ラウンドの打ち合い（ターン制戦闘）。
+ * こちらの打ち込み→（相手が生きていれば）反撃→形勢の読み直し。
+ * 「挑む」は一手ごとの選択になった——深手を負ってから退くか、粘るかは毎ラウンド選べる。
+ */
+function resolveEngage(state: GameState, events: EventLine[]): void {
+  const pending = state.pending!;
+  const floor = currentFloor(state);
+  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
+  const p = state.player;
+  const profile = combatProfile(p, enemy, state.instance.character);
+  const sleeping = (enemy.sleepTurns ?? 0) > 0;
+
+  if (pending.rounds === 0) {
+    // 最初に刃を合わせた時の読みが、この賭けのラベル（計測§12もこの読みで行う）
+    pending.engagedLabel = pending.assessment.label;
+    pending.engagedRisk = pending.assessment.internalRisk;
+    pending.conditionAtStart = p.condition;
+    events.push(
+      sleeping
+        ? `あなたは眠りこける${enemy.name}に刃を立てた。`
+        : `あなたは${enemy.name}に打ちかかった。`,
+    );
+  }
+  pending.rounds++;
+
+  const r = fightRound(profile, enemy.strength, state.rng, sleeping);
+  enemy.sleepTurns = 0; // 刃を受ければ、眠りは終わる
+  enemy.strength = Math.max(0, enemy.strength - r.blowDamage);
+  wearWeapon(state, 3 + Math.floor(state.rng.next() * 5), events);
+
+  if (r.enemyDead) {
+    enemy.alive = false;
+    events.push(`${enemy.name}は動かなくなった。`);
+    finishFight(state, events, enemy);
+    return;
+  }
+
+  events.push(blowWord(r.blowDamage));
+  if (enemy.strength <= 0.15) events.push(`${enemy.name}はもう立っているのがやっとだ。`);
+
+  if (r.playerHit) {
+    p.condition -= r.playerDamage;
+    events.push(woundWord(r.playerDamage));
+    wearArmor(state, 4 + Math.floor(state.rng.next() * 6), events);
+    if (p.condition <= 0) {
+      recordFightEnd(state, 'death');
+      die(
+        state,
+        events,
+        `あなたは「${pending.engagedLabel}」とみた${enemy.name}に挑み、敗北した。`,
+      );
+      return;
+    }
+  } else if (sleeping) {
+    events.push(`${enemy.name}が跳ね起きた。もう不意は打てない。`);
+  } else {
+    events.push('反撃は空を切った。');
+  }
+
+  advanceTurn(state, events, 1, 1);
+  if (state.phase === 'dead') {
+    // 毒・飢えが打ち合いの最中に尽きた
+    recordFightEnd(state, 'death');
+    return;
+  }
+
+  // 形勢を読み直す——ラベルの変化がそのまま戦況になる
+  const before = pending.assessment.label;
+  pending.assessment = assessDanger(p, enemy, state.instance.character);
+  events.push(
+    pending.assessment.label === before
+      ? `（危険度：${before}のまま）`
+      : `（危険度：${before} → ${pending.assessment.label}）`,
+  );
 }
 
 function resolveRetreat(state: GameState, events: EventLine[]): void {
@@ -1545,20 +1603,25 @@ function doInspect(state: GameState, events: EventLine[]): void {
 
 // ---- その他の行動 ----
 
+/** 休息で戻せる体調の上限。深い傷は迷宮の中では塞がらない（薬と泉だけが超えられる） */
+const REST_CAP = 70;
+
 function doRest(state: GameState, events: EventLine[]): void {
   const p = state.player;
   // 空腹だと休んでも回復しない（空腹・装備が効く、の学習材料 §7）
   if (p.hunger >= 100) {
     events.push('壁に背を預けた。だが飢えで眠れず、体は少しも休まらない。');
+  } else if (p.condition >= REST_CAP) {
+    events.push('壁に背を預けて休んだ。浅い傷は落ち着いたが、深い疲れは地上でなければ抜けない。');
   } else if (p.hunger >= 80) {
-    p.condition = Math.min(100, p.condition + 6);
+    p.condition = Math.min(REST_CAP, p.condition + 6);
     events.push('短く休んだ。腹の虫が鳴って、眠りは浅い。');
   } else {
-    p.condition = Math.min(100, p.condition + 14);
+    p.condition = Math.min(REST_CAP, p.condition + 10);
     events.push(good('壁に背を預け、短く休んだ。傷の手当てと、鎧の紐を締め直す。'));
   }
   if (p.armor) p.armor.wear = Math.max(0, p.armor.wear - 4); // 応急の手入れ
-  advanceTurn(state, events, 2.5, 2);
+  advanceTurn(state, events, 3, 2);
 }
 
 function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]): void {

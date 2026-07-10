@@ -25,10 +25,12 @@ const DIR_LABELS: Record<string, string> = {
   east: '東へ',
 };
 
-export function actionLabel(a: Action): string {
+export function actionLabel(a: Action, state?: GameState): string {
   if (a.type === 'move') return DIR_LABELS[a.dir];
   if (a.type === 'throwTalisman') return `${a.pattern}の札を投げる`;
   if (a.type === 'drinkPotion') return `${POTION_NAMES[a.kind] ?? '薬'}を飲む`;
+  // 打ち合いが始まったら「挑む」ではなく「打ち込む」（ターン制戦闘の一手）
+  if (a.type === 'engage' && state?.pending && state.pending.rounds > 0) return '打ち込む';
   return ACTION_LABELS[a.type] ?? a.type;
 }
 
@@ -47,7 +49,7 @@ export function renderActions(
       kbd.textContent = `${i + 1}`;
       btn.appendChild(kbd);
     }
-    btn.appendChild(document.createTextNode(actionLabel(a)));
+    btn.appendChild(document.createTextNode(actionLabel(a, state)));
     btn.addEventListener('click', () => onAction(a));
     container.appendChild(btn);
   });

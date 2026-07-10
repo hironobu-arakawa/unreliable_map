@@ -321,10 +321,11 @@ function generateFloor(
     if (!p) break;
     const kind: EnemyKind =
       rng.next() < b.metallicEnemyRate ? 'metallic' : pick(rng, ['beast', 'shade'] as const);
+    // 深いほど強い。宝の眠る最深階の敵は、生半可な支度では死の気配になる
     const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
     const strength = Math.min(
       0.95,
-      Math.max(0.1, 0.2 + depthFrac * 0.5 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
+      Math.max(0.1, 0.22 + depthFrac * 0.58 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
     );
     const carry =
       kind === 'metallic'
