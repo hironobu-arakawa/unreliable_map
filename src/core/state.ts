@@ -862,7 +862,19 @@ function sideAttack(state: GameState, e: Entity, events: EventLine[]): void {
     events.push(bad(`横合いから${e.name}の一撃が飛んできた。`));
     wearArmor(state, 3 + Math.floor(state.rng.next() * 5), events);
     if (p.condition <= 0) {
-      recordFightEnd(state, 'death');
+      // 刃を合わせた後なら戦死として計測。睨み合い・投げの最中なら挑戦には数えない
+      const pending = state.pending;
+      if (pending && pending.rounds > 0) {
+        recordFightEnd(state, 'death');
+      } else if (pending) {
+        recordDanger(state.telemetry, {
+          turn: state.turn,
+          danger_label: pending.assessment.label,
+          internal_risk: pending.assessment.internalRisk,
+          engaged: false,
+          outcome: 'retreatHit',
+        });
+      }
       die(state, events, '乱戦に呑まれた。二匹目を、数えに入れていなかった。');
     }
   } else {
@@ -958,8 +970,9 @@ function resolveThrow(
       }
     }
   } else if (!pattern) {
+    // 石は安全だが、あくまで牽制。仕留めるのは刃か火の仕事
     p.stones--;
-    enemy.strength = Math.max(0.05, enemy.strength - (0.08 + state.rng.next() * 0.06));
+    enemy.strength = Math.max(0.05, enemy.strength - (0.06 + state.rng.next() * 0.04));
     events.push(`石を投げつけた。${enemy.name}は一瞬ひるんだ。`);
   } else {
     p.talismans[pattern]--;
@@ -1025,6 +1038,26 @@ function resolveThrow(
     }
   }
 
+  // 投げた隙に踏み込まれることがある（眠らせた相手は踏み込んでこない）。
+  // 相手がどれほど弱っていても、投擲の隙は隙だ（最低確率を持つ）
+  if (
+    (enemy.sleepTurns ?? 0) <= 0 &&
+    state.rng.next() < 0.08 + pending.assessment.internalRisk * 0.25
+  ) {
+    p.condition -= 5 + Math.floor(state.rng.next() * 7);
+    events.push(bad('投げた隙に、爪が掠めた。'));
+    if (p.condition <= 0) {
+      die(state, events, '投げた隙を突かれた。それが最後だった。');
+      return;
+    }
+  }
+
+  // 一投もひと呼吸ぶんの時間を食う——その間、他の何かは動いている（横槍もある）
+  advanceTurn(state, events, 0.8, 0.8);
+  if (state.phase === 'dead') return;
+  processEnemies(state, events, enemy.id, true);
+  if ((state.phase as GamePhase) === 'dead') return;
+
   // 危険度を再評価して見せる——賭けの結果がラベルの変化として返る
   const before = pending.assessment.label;
   pending.assessment = assessDanger(
@@ -1038,15 +1071,6 @@ function resolveThrow(
       ? `（危険度：${before}のまま）`
       : `（危険度：${before} → ${pending.assessment.label}）`,
   );
-
-  // 投げた隙に踏み込まれることがある（眠らせた相手は踏み込んでこない）
-  if ((enemy.sleepTurns ?? 0) <= 0 && state.rng.next() < pending.assessment.internalRisk * 0.2) {
-    p.condition -= 5 + Math.floor(state.rng.next() * 7);
-    events.push(bad('投げた隙に、爪が掠めた。'));
-    if (p.condition <= 0) {
-      die(state, events, '投げた隙を突かれた。それが最後だった。');
-    }
-  }
 }
 
 // ---- 装備の傷みと入手 ----
@@ -1402,7 +1426,10 @@ function resolveRetreat(state: GameState, events: EventLine[]): void {
 
   // 韋駄天の札: 体が軽いうちの離脱は無傷（眠っている相手も追い打ちできない）
   const cleanBreak = state.player.hasteTurns > 0 || (enemy.sleepTurns ?? 0) > 0;
-  if (!cleanBreak && state.rng.next() < risk * 0.35) {
+  // 背を向ける瞬間は、相手がどれほど弱っていても無防備だ（最低確率を持つ）。
+  // 下がる場所のない壁際からの離脱は、なおさら高くつく
+  const partingChance = (best ? 0.08 : 0.25) + risk * 0.3;
+  if (!cleanBreak && state.rng.next() < partingChance) {
     const dmg = 6 + Math.floor(state.rng.next() * 10);
     state.player.condition -= dmg;
     events.push(bad('離れ際、鋭い痛みが走った。'));

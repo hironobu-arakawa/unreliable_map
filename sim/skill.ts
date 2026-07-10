@@ -12,6 +12,7 @@
 import { SILENT_WELL } from '../src/core/character';
 import { confidenceLabel } from '../src/core/confidence';
 import { assessDanger } from '../src/core/danger';
+import { gemTotal } from '../src/core/economy';
 import { featureAt, isWalkable, tileAt } from '../src/core/generate';
 import { hashSeed, mulberry32, type RNG } from '../src/core/rng';
 import {
@@ -145,6 +146,8 @@ type RunResult = {
   turns: number;
   combatDeath: boolean;
   mode: 'chest' | 'boss';
+  /** 生還して換金できた銀貨（死ねば0） */
+  income: number;
 };
 
 function run(seed: number, brain: Brain): RunResult {
@@ -440,6 +443,7 @@ function run(seed: number, brain: Brain): RunResult {
     turns: state.turn,
     combatDeath: state.phase === 'dead' && lastDanger?.outcome === 'death',
     mode: state.instance.treasureMode,
+    income: state.phase === 'escaped' ? gemTotal(state.player.gems) : 0,
   };
 }
 
@@ -456,6 +460,7 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
   let turns = 0;
   let combatDeaths = 0;
   let deaths = 0;
+  let income = 0;
   const byMode = { chest: { n: 0, treasure: 0 }, boss: { n: 0, treasure: 0 } };
   for (let s = 0; s < N; s++) {
     const r = run(hashSeed('skill-exp', s), brain);
@@ -464,6 +469,7 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
     if (r.treasure) treasure++;
     deepest += r.deepest;
     turns += r.turns;
+    income += r.income;
     if (r.combatDeath) combatDeaths++;
     byMode[r.mode].n++;
     if (r.treasure) byMode[r.mode].treasure++;
@@ -477,7 +483,8 @@ for (const brain of ['fight', 'smart', 'reader'] as Brain[]) {
       .toFixed(0)
       .padStart(9)} | ${combatDeaths}/${deaths}` +
       ` | 宝: 箱型${((byMode.chest.treasure / Math.max(1, byMode.chest.n)) * 100).toFixed(0)}%` +
-      `/ボス型${((byMode.boss.treasure / Math.max(1, byMode.boss.n)) * 100).toFixed(0)}%`,
+      `/ボス型${((byMode.boss.treasure / Math.max(1, byMode.boss.n)) * 100).toFixed(0)}%` +
+      ` | 平均収入 銀${(income / N).toFixed(1)}`,
   );
 }
 console.log(

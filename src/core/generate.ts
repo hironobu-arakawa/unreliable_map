@@ -280,7 +280,7 @@ function generateFloor(
       ['potion', 0.15],
       ['food', 0.15],
       ['talisman', 0.13],
-      ['gem', 0.05 + (1 - upperness) * 0.12], // 深い箱ほど石が眠る
+      ['gem', 0.04 + (1 - upperness) * 0.08], // 深い箱ほど石が眠る
       ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
       ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
       ['empty', 0.1],
@@ -330,7 +330,7 @@ function generateFloor(
       Math.max(0.1, 0.22 + depthFrac * 0.58 + (b.enemyLethality - 0.5) * 0.3 + (rng.next() - 0.5) * 0.16),
     );
     // 深い階の敵は光るものを呑んでいることがある（挑む動機の上積み）
-    const gemCarryP = 0.08 + (1 - upperness) * 0.22;
+    const gemCarryP = 0.05 + (1 - upperness) * 0.12;
     const carry =
       rng.next() < gemCarryP
         ? ('gem' as const)
@@ -410,7 +410,7 @@ function generateFloor(
   // 宝石: 深い階の土にときどき埋もれている
   {
     const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
-    if (depth >= 2 && rng.next() < 0.1 + depthFrac * 0.2) {
+    if (depth >= 2 && rng.next() < 0.06 + depthFrac * 0.12) {
       const p = takeFreeCell(floor, cells, used);
       if (p) {
         const gemKind = rollGemKind(rng, depthFrac);

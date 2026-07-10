@@ -7,10 +7,12 @@ import type { RNG } from './rng';
 import { pickWeighted } from './rng';
 import type { GemKind } from './types';
 
+// 換金値の目安: 1潜行の平均収入が銀貨20枚前後になるよう、出現率（generate.ts）とセットで調整。
+// 「薬を全種そろえると1潜行ぶんでは足りない」= 何に使うかを選ばせる価格帯を保つ
 export const GEM_DATA: Record<GemKind, { name: string; value: number }> = {
-  garnet: { name: '小粒の紅玉', value: 25 },
-  moonstone: { name: '月長石', value: 40 },
-  sapphire: { name: '澄んだ青玉', value: 70 },
+  garnet: { name: '小粒の紅玉', value: 10 },
+  moonstone: { name: '月長石', value: 18 },
+  sapphire: { name: '澄んだ青玉', value: 35 },
 };
 
 /** 深さに応じて宝石の種類を引く（深いほど良い石が眠る） */
