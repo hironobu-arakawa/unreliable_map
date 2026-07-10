@@ -1,9 +1,9 @@
 // エントリポイント: core と ui を結線する。
-// 画面は二つ——台帳（穴を選ぶ）と潜行。生還すれば装備を持ち出せる、死ねば失う。
+// 画面は二つ——台帳（支部を選び、穴を選ぶ）と潜行。生還すれば装備を持ち出せる、死ねば失う。
 // runSeed は URL の ?seed=（＋?well=）で固定でき、固定すれば潜行は完全に再現可能（§4.2・受け入れ条件9）。
 
-import { ATLAS, SILENT_WELL } from './core/character';
-import { newGame, step, type Action, type GameState } from './core/state';
+import { ATLAS, BRANCHES, SILENT_WELL } from './core/character';
+import { newGame, step, type Action, type EventLine, type GameState } from './core/state';
 import { dangerRateByLabel, hitRateByLabel } from './core/telemetry';
 import type { DungeonCharacter } from './core/types';
 import { bindKeyboard, renderActions } from './ui/input';
@@ -19,6 +19,8 @@ import { escapeHtml, renderView } from './ui/render';
 // ---- DOM ----
 const el = {
   atlas: document.getElementById('atlas')!,
+  branches: document.getElementById('branches')!,
+  branchNote: document.getElementById('branch-note')!,
   carryNote: document.getElementById('carry-note')!,
   wells: document.getElementById('wells')!,
   game: document.getElementById('game')!,
@@ -39,8 +41,10 @@ const el = {
 const profile = loadProfile();
 let state: GameState | null = null;
 let currentCharacter: DungeonCharacter = SILENT_WELL;
+/** いま台帳で開いているギルド支部 */
+let currentBranchId = profile.lastBranch ?? BRANCHES[0].id;
 /** 出来事の履歴（新しいものが末尾）。直近を明るく、過去を薄く見せるためUI層が持つ */
-let eventHistory: string[][] = [];
+let eventHistory: EventLine[][] = [];
 let runRecorded = false;
 /** ?seed= による再現潜行か（帳面に残さず、持ち越しも使わない） */
 let isReplay = false;
@@ -80,15 +84,45 @@ function showAtlas(): void {
 
   el.carryNote.textContent = profile.carryover
     ? `前回の生還から持ち出した品：${describeKit(profile.carryover)}`
-    : '支度は組合の標準のみ（傷んだ短剣・松明・糧食）。';
+    : '支度はギルドの標準のみ（傷んだ短剣・松明・傷薬・糧食）。';
+
+  const branch = BRANCHES.find((b) => b.id === currentBranchId) ?? BRANCHES[0];
+
+  // 支部の選択（地名のつくギルド支部。台帳は支部ごと・1支部9地図）
+  el.branches.innerHTML = '';
+  for (const b of BRANCHES) {
+    const btn = document.createElement('button');
+    btn.className = `branch${b.id === branch.id ? ' active' : ''}`;
+    const cleared = b.wells.filter((w) => wellRecord(profile, w.id).treasures > 0).length;
+    btn.textContent = `${b.name}（宝 ${cleared}／${b.wells.length}）`;
+    btn.addEventListener('click', () => {
+      currentBranchId = b.id;
+      profile.lastBranch = b.id;
+      saveProfile(profile);
+      showAtlas();
+    });
+    el.branches.appendChild(btn);
+  }
+  el.branchNote.textContent = branch.tagline;
 
   el.wells.innerHTML = '';
-  for (const character of ATLAS) {
+  for (const character of branch.wells) {
     const card = document.createElement('section');
     card.className = 'panel well';
+    const rec = wellRecord(profile, character.id);
+    // クリア（＝宝を持ち帰った）した穴は台帳上で色分けされる
+    const cleared = rec.treasures > 0;
+    if (cleared) card.classList.add('cleared');
 
     const h3 = document.createElement('h3');
     h3.textContent = character.name;
+    if (cleared) {
+      const mark = document.createElement('span');
+      mark.className = 'clear-mark';
+      mark.textContent = 'クリア';
+      mark.title = 'この穴の宝を持ち帰った';
+      h3.appendChild(mark);
+    }
     card.appendChild(h3);
 
     const rumors = document.createElement('ul');
@@ -102,7 +136,6 @@ function showAtlas(): void {
 
     const stats = document.createElement('div');
     stats.className = 'stats';
-    const rec = wellRecord(profile, character.id);
     stats.textContent =
       rec.dives > 0
         ? `潜行 ${rec.dives} ／ 生還 ${rec.escapes} ／ 宝 ${rec.treasures} ／ 報告された最深 ${rec.deepest > 0 ? `B${rec.deepest}F` : '——'}`
@@ -176,13 +209,13 @@ function finalizeRun(): void {
 function endMetaLines(s: GameState): string[] {
   if (isReplay) return ['（再現潜行——この結末は帳面に残らない。）'];
   if (s.phase === 'escaped') {
-    const lines = ['持ち出した品は組合に預けた——次の潜行の支度になる。'];
+    const lines = ['持ち出した品はギルドに預けた——次の潜行の支度になる。'];
     if (s.player.hasTreasure) lines.push('台帳のあなたの頁に、銘がひとつ刻まれた。');
     return lines;
   }
   return [
     '担いでいた品は、編み直される大地のどこかへ消えた。',
-    '次の潜行は、組合の標準の支度から始まる。',
+    '次の潜行は、ギルドの標準の支度から始まる。',
   ];
 }
 

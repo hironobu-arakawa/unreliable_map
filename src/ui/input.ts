@@ -1,7 +1,7 @@
 // 行動選択 §11
 // core の availableActions を読んでボタンを並べ、選択を core に渡すだけ。
 
-import { availableActions, type Action, type GameState } from '../core/state';
+import { availableActions, POTION_NAMES, type Action, type GameState } from '../core/state';
 
 const ACTION_LABELS: Record<string, string> = {
   listen: '耳を澄ます',
@@ -9,7 +9,6 @@ const ACTION_LABELS: Record<string, string> = {
   descend: '階段を降りる',
   ascend: '階段を上る',
   escape: '地上へ脱出する',
-  drinkPotion: '薬を飲む',
   eat: '糧食を食べる',
   drink: '泉の水を飲む',
   open: '箱を開ける',
@@ -29,6 +28,7 @@ const DIR_LABELS: Record<string, string> = {
 export function actionLabel(a: Action): string {
   if (a.type === 'move') return DIR_LABELS[a.dir];
   if (a.type === 'throwTalisman') return `${a.pattern}の札を投げる`;
+  if (a.type === 'drinkPotion') return `${POTION_NAMES[a.kind] ?? '薬'}を飲む`;
   return ACTION_LABELS[a.type] ?? a.type;
 }
 

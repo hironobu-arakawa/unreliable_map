@@ -24,6 +24,18 @@ export type DungeonCharacter = {
   };
 };
 
+/**
+ * ギルドの支部（地名がつく）。台帳は支部ごとに分かれ、1支部につき9つの穴を載せる。
+ * 並びは浅い穴→深い穴。
+ */
+export type GuildBranch = {
+  id: string;
+  name: string; // 例: "灰嶺支部"
+  /** 帳場が支部について添える一言 */
+  tagline: string;
+  wells: DungeonCharacter[];
+};
+
 // ---- ダンジョン内の存在 ----
 export type FeatureKind =
   | 'stairsUp' // 上り階段（B1では入口）
@@ -89,9 +101,14 @@ export type Entity = {
   dormant?: boolean;
   /** 最深部の主（宝を抱く守り手。ボス型のランでのみ） */
   boss?: boolean;
+  /** 眠りの札で眠っている残りターン。眠っている間は知覚も移動もしない */
+  sleepTurns?: number;
 };
 
 export type ItemKind = 'potion' | 'food' | 'weapon' | 'stone' | 'talisman';
+
+/** 薬の種類。瓶の銘は読める——効くかどうかは土地（potionInstability）と運が決める */
+export type PotionKind = 'salve' | 'elixir' | 'antidote' | 'tonic' | 'murk';
 
 export type Item = {
   id: string;
@@ -103,12 +120,17 @@ export type Item = {
   broken?: boolean;
   /** 札の模様。模様から属性は察知できない（対応はランごとにシャッフル） */
   pattern?: string;
+  /** 薬の種類（kind === 'potion' のとき） */
+  potionKind?: PotionKind;
 };
+
+/** 札の効き方の系統。模様→系統の対応はランごとにシャッフルされる */
+export type TalismanEffect = 'burn' | 'slow' | 'sleep' | 'haste';
 
 /** 札の模様ごとの真実（ランごとに確定。見た目からは読めない） */
 export type TalismanLore = Record<
   string,
-  { strongVs: EnemyKind; backfireVs: EnemyKind }
+  { effect: TalismanEffect; strongVs: EnemyKind; backfireVs: EnemyKind }
 >;
 
 /** 宝の出所（ランごとにシードで決まる） */
@@ -216,9 +238,10 @@ export type PlayerState = {
   torch: number; // 燃えている松明の残り 0..100
   spareTorches: number; // 予備の松明（尽きてからが本当の暗闇）
   poisonTurns: number; // 毒の残りターン
+  hasteTurns: number; // 韋駄天の札の残りターン（体が軽く、敵の足が半分に見える）
   weaponTier: WeaponTier;
   hasTreasure: boolean; // 最深部の宝
-  potions: number;
+  potions: Record<string, number>; // 薬の種類→本数（キーは PotionKind）
   food: number;
   stones: number; // 投げる石（安全だが弱い）
   talismans: Record<string, number>; // 模様→枚数

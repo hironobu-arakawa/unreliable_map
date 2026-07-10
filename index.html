@@ -79,6 +79,23 @@
         font-size: 13.5px;
         line-height: 2.1;
       }
+      /* ギルド支部の選択（地名タブ） */
+      #branches {
+        display: flex;
+        justify-content: center;
+        gap: 10px;
+        margin: 0 0 10px;
+      }
+      #branches button.branch.active {
+        border-color: var(--amber);
+        color: var(--amber);
+      }
+      #branch-note {
+        text-align: center;
+        color: var(--ink-faint);
+        font-size: 12.5px;
+        margin: 0 0 16px;
+      }
       #carry-note {
         max-width: 620px;
         margin: 0 auto 24px;
@@ -109,6 +126,22 @@
         font-size: 12px;
         margin-bottom: 10px;
         font-family: var(--mono);
+      }
+      /* クリア（宝を持ち帰った）穴は台帳上で金色に色分け */
+      .well.cleared {
+        border-color: #6b5a2c;
+        background: linear-gradient(160deg, #241e12 0%, #1b1710 100%);
+      }
+      .well .clear-mark {
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--gold);
+        border: 1px solid #6b5a2c;
+        border-radius: 2px;
+        padding: 1px 7px;
+        margin-left: 10px;
+        letter-spacing: 0.25em;
+        vertical-align: 2px;
       }
 
       /* ---- 潜行画面 ---- */
@@ -165,8 +198,12 @@
       /* 出来事: 直近が明るく、過去は薄れていく */
       #events li.old1 { opacity: 0.55; }
       #events li.old2 { opacity: 0.32; }
+      /* 起きた事実の色: 被弾・悪化=赤、回復・実入り=緑（情報の信頼度には決して色を付けない） */
+      #events li.t-bad { color: #d07a68; }
+      #events li.t-good { color: #a4ba7c; }
       #status .line { font-size: 13.5px; line-height: 1.9; }
       #status .bad { color: var(--red); }
+      #status .good { color: #a4ba7c; }
 
       /* 結末 */
       #end-panel { border-width: 2px; }
@@ -214,7 +251,7 @@
   </head>
   <body>
     <main>
-      <!-- 台帳（タイトル画面）: 世界観の導入と、潜る穴の選択 -->
+      <!-- 台帳（タイトル画面）: 世界観の導入と、支部・穴の選択 -->
       <section id="atlas" hidden>
         <h1>あてにならない地図</h1>
         <p class="tagline">UNRELIABLE MAP</p>
@@ -224,9 +261,11 @@
           なぜそうなるのかを、知る者はいない。<br />
           ただ、穴ごとの「性格」だけは変わらない。金物の多い穴では今日も金物の音がするし、
           帰り道の崩れる穴は、今日も誰かの帰り道を塞いでいる。<br />
-          だから組合は、今日も記録を集めている。正確な地図が一晩で古地図になると知りながら——
+          だからギルドは、今日も記録を集めている。正確な地図が一晩で古地図になると知りながら——
           それでも、記録だけが頼りだからだ。
         </blockquote>
+        <div id="branches"></div>
+        <div id="branch-note"></div>
         <div id="carry-note"></div>
         <div id="wells"></div>
       </section>

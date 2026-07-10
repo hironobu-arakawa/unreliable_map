@@ -183,8 +183,15 @@ function autoplay(seed: number): BotResult {
       const p = state.player;
       const here = actions;
       const has = (t: Action['type']) => here.find((a) => a.type === t);
+      const potionActs = here.filter(
+        (a): a is Extract<Action, { type: 'drinkPotion' }> => a.type === 'drinkPotion',
+      );
+      // 回復系（傷薬・霊薬・濁り薬）を優先して飲む
+      const healPotion =
+        potionActs.find((a) => a.kind === 'salve' || a.kind === 'elixir' || a.kind === 'murk') ??
+        potionActs[0];
       if (p.hunger >= 70 && has('eat')) chosen = { type: 'eat' };
-      else if (p.condition <= 35 && has('drinkPotion')) chosen = { type: 'drinkPotion' };
+      else if (p.condition <= 35 && healPotion) chosen = healPotion;
       else if (has('open') && bot.next() < 0.75) chosen = { type: 'open' };
       else if (has('drink') && (p.hunger > 40 || p.condition < 80) && bot.next() < 0.6)
         chosen = { type: 'drink' };

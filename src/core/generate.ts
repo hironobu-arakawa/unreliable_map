@@ -10,12 +10,13 @@ import type {
   Feature,
   Floor,
   Item,
+  TalismanEffect,
   TalismanLore,
   Tile,
   TreasureMode,
   Vec,
 } from './types';
-import { ENEMY_NAMES } from './character';
+import { ENEMY_NAMES, POTION_DROP, POTION_NAMES } from './character';
 import type { RNG } from './rng';
 import { hashSeed, mulberry32, pick, pickWeighted, randInt, shuffle } from './rng';
 
@@ -149,7 +150,10 @@ function takeFreeCell(floor: Floor, cells: Vec[], used: Set<string>): Vec | null
 }
 
 /** 札の模様の候補。模様から効果は察知できない（対応はランごとにシャッフル） */
-export const TALISMAN_PATTERNS = ['渦', '三ツ目', '鱗紋'] as const;
+export const TALISMAN_PATTERNS = ['渦', '三ツ目', '鱗紋', '月牙', '雷紋', '枯枝'] as const;
+
+/** 札の効き方の系統。ランごとに模様へ割り当てられる */
+export const TALISMAN_EFFECTS: readonly TalismanEffect[] = ['burn', 'slow', 'sleep', 'haste'];
 
 function generateFloor(
   character: DungeonCharacter,
@@ -378,7 +382,17 @@ function generateFloor(
   }
   if (rng.next() < 0.5) {
     const p = takeFreeCell(floor, cells, used);
-    if (p) floor.items.push({ id: `i${depth}-potion`, kind: 'potion', name: '濁った薬', pos: p, taken: false });
+    if (p) {
+      const potionKind = pickWeighted(rng, POTION_DROP);
+      floor.items.push({
+        id: `i${depth}-potion`,
+        kind: 'potion',
+        name: `${POTION_NAMES[potionKind]}の瓶`,
+        pos: p,
+        taken: false,
+        potionKind,
+      });
+    }
   }
   const midDepth = Math.ceil(maxDepth / 2);
   if (depth === midDepth && rng.next() < b.rewardWeaponBias) {
@@ -400,13 +414,15 @@ export function generateInstance(character: DungeonCharacter, runSeed: number): 
   // 宝の出所: 箱の中か、主が抱いているか（ランごとにシードで決まる）
   const treasureMode: TreasureMode = rng.next() < 0.5 ? 'chest' : 'boss';
 
-  // 札の模様→効果の対応をシャッフル（模様から属性は察知できない）
+  // 札の模様→系統・相性の対応をシャッフル（模様から効果は察知できない）
   const kinds: EnemyKind[] = shuffle(rng, ['metallic', 'beast', 'shade'] as const);
-  const runPatterns = shuffle(rng, TALISMAN_PATTERNS).slice(0, 2);
+  const runPatterns = shuffle(rng, TALISMAN_PATTERNS).slice(0, 3);
+  const runEffects = shuffle(rng, TALISMAN_EFFECTS);
   const talismanLore: TalismanLore = {};
   for (let i = 0; i < runPatterns.length; i++) {
-    // 効く相手と逆効く相手は必ず別の種族
+    // 効く相手と逆効く相手は必ず別の種族。系統もランごとに編み直される
     talismanLore[runPatterns[i]] = {
+      effect: runEffects[i % runEffects.length],
       strongVs: kinds[i % kinds.length],
       backfireVs: kinds[(i + 1 + Math.floor(rng.next() * 2)) % kinds.length],
     };

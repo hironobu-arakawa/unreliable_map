@@ -91,6 +91,12 @@ export function assessDanger(
     factors.push('毒が回っている');
   }
 
+  // 韋駄天の札: 体が軽いうちは立ち回りで受けを流せる
+  if (player.hasteTurns > 0) {
+    risk -= 0.05;
+    factors.push('体が羽のように軽い');
+  }
+
   // 光と種族: 獣は火を恐れ、影は闇の中で濃くなる（金属は光に無頓着）
   const lit = player.torch > 60;
   const dark = player.torch <= 0 && player.spareTorches <= 0;
@@ -108,6 +114,12 @@ export function assessDanger(
     } else if (lit) {
       risk -= 0.04;
     }
+  }
+
+  // 眠りの札: 眠りこけている相手への一撃は、ほとんど賭けにならない
+  if ((enemy.sleepTurns ?? 0) > 0) {
+    risk *= 0.3;
+    factors.push('相手は深く眠っている');
   }
 
   const internalRisk = clamp01(risk);

@@ -2,6 +2,7 @@
 // 生還すれば装備を持ち出せる、死ねば失う——結末の差はここに残る。
 // localStorage に触れるのはUI層のみ（coreは純粋 §4.1）。
 
+import { POTION_NAMES } from '../core/character';
 import type { StartKit } from '../core/state';
 import type { PlayerState } from '../core/types';
 
@@ -18,8 +19,10 @@ export type WellRecord = {
 export type Profile = {
   version: 1;
   wells: Record<string, WellRecord>;
-  /** 前回の生還で持ち出した品。死ぬと null（組合の標準の支度に戻る） */
+  /** 前回の生還で持ち出した品。死ぬと null（ギルドの標準の支度に戻る） */
   carryover: StartKit | null;
+  /** 最後に開いていたギルド支部（台帳画面の復元用） */
+  lastBranch?: string;
 };
 
 const STORAGE_KEY = 'unreliable-map/profile/v1';
@@ -34,6 +37,11 @@ export function loadProfile(): Profile {
     if (!raw) return emptyProfile();
     const parsed = JSON.parse(raw) as Profile;
     if (parsed.version !== 1) return emptyProfile();
+    // 旧形式の移行: 薬が本数（number）だった頃の持ち越しは傷薬として扱う
+    const carry = parsed.carryover as unknown as { potions?: unknown } | null;
+    if (carry && typeof carry.potions === 'number') {
+      carry.potions = carry.potions > 0 ? { salve: carry.potions } : {};
+    }
     return parsed;
   } catch {
     return emptyProfile();
@@ -65,8 +73,12 @@ export function kitFromPlayer(p: PlayerState): StartKit {
   for (const [pattern, count] of Object.entries(p.talismans)) {
     if (count > 0) talismans[pattern] = count;
   }
+  const potions: Record<string, number> = {};
+  for (const [kind, count] of Object.entries(p.potions)) {
+    if (count > 0) potions[kind] = count;
+  }
   return {
-    potions: p.potions,
+    potions,
     food: p.food,
     stones: p.stones,
     spareTorches: p.spareTorches,
@@ -79,7 +91,9 @@ export function kitFromPlayer(p: PlayerState): StartKit {
 export function describeKit(kit: StartKit): string {
   const parts: string[] = [];
   if (kit.weaponTier >= 2) parts.push('剣');
-  if (kit.potions > 0) parts.push(`薬×${kit.potions}`);
+  for (const [kind, count] of Object.entries(kit.potions)) {
+    if (count > 0) parts.push(`${POTION_NAMES[kind] ?? '薬'}×${count}`);
+  }
   if (kit.food > 0) parts.push(`糧食×${kit.food}`);
   if (kit.stones > 0) parts.push(`石×${kit.stones}`);
   if (kit.spareTorches > 0) parts.push(`予備の松明×${kit.spareTorches}`);

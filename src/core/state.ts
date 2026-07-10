@@ -7,19 +7,20 @@ import type {
   Entity,
   Floor,
   PlayerState,
+  PotionKind,
   Vec,
   WeaponTier,
 } from './types';
 import type { DungeonCharacter } from './types';
-import { KIND_WORD } from './character';
+import { KIND_WORD, POTION_DROP, POTION_NAMES } from './character';
 import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
-export { KIND_WORD };
+export { KIND_WORD, POTION_NAMES };
 import { assessDanger, type DangerAssessment } from './danger';
 import { enemyAt, featureAt, generateInstance, isWalkable, itemAt, tileAt } from './generate';
 import { applyHearsay } from './hearsay';
 import { resolveInfo } from './resolve';
 import type { RNG } from './rng';
-import { hashSeed, mulberry32, pick, shuffle } from './rng';
+import { hashSeed, mulberry32, pick, pickWeighted, shuffle } from './rng';
 import {
   createTelemetry,
   recordChoice,
@@ -28,6 +29,22 @@ import {
   recordSummary,
   type TelemetryLog,
 } from './telemetry';
+
+// ---- 出来事の行 ----
+// UIは tone で色を変える（bad=身に受けた痛み・悪化は赤、good=回復・実入りは緑）。
+// 情報の信頼度を色分けしない方針（憲法6）はそのまま——色が付くのは「起きた事実」だけ。
+
+export type EventTone = 'bad' | 'good';
+export type EventLine = string | { text: string; tone: EventTone };
+
+export function eventText(e: EventLine): string {
+  return typeof e === 'string' ? e : e.text;
+}
+export function eventTone(e: EventLine): EventTone | null {
+  return typeof e === 'string' ? null : e.tone;
+}
+const bad = (text: string): EventLine => ({ text, tone: 'bad' });
+const good = (text: string): EventLine => ({ text, tone: 'good' });
 
 // ---- 方向 ----
 
@@ -129,7 +146,7 @@ export type GameState = {
   phase: GamePhase;
   pending: PendingEncounter | null;
   /** 直近の行動結果（行動後の結果と事前情報の対応 §10） */
-  events: string[];
+  events: EventLine[];
   /** 耳を澄ますで得た未検証の気配情報 */
   senses: Claim[];
   deathLog: string[] | null;
@@ -152,7 +169,7 @@ export type Action =
   | { type: 'descend' }
   | { type: 'ascend' }
   | { type: 'escape' }
-  | { type: 'drinkPotion' }
+  | { type: 'drinkPotion'; kind: PotionKind }
   | { type: 'eat' }
   | { type: 'drink' } // 泉の水を飲む（不可逆な賭け）
   | { type: 'open' } // 宝箱を開ける（不可逆な賭け）
@@ -175,7 +192,7 @@ export function currentFloor(state: GameState): Floor {
  * 持ち越した札の模様は残るが、模様→効果の理は編み直される（talismanLoreはランごと）
  */
 export type StartKit = {
-  potions: number;
+  potions: Record<string, number>; // 薬の種類→本数
   food: number;
   stones: number;
   spareTorches: number;
@@ -183,9 +200,9 @@ export type StartKit = {
   talismans: Record<string, number>;
 };
 
-/** 組合が保証する最低限の支度。持ち越しがこれを下回っても詰まない（死の連鎖を断つ） */
+/** ギルドが保証する最低限の支度。持ち越しがこれを下回っても詰まない（死の連鎖を断つ） */
 export const BASE_KIT: StartKit = {
-  potions: 1,
+  potions: { salve: 1 },
   food: 2,
   stones: 2,
   spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
@@ -193,11 +210,15 @@ export const BASE_KIT: StartKit = {
   talismans: {},
 };
 
-/** 項目ごとに組合の標準と持ち越しの多い方を採る */
+/** 項目ごとにギルドの標準と持ち越しの多い方を採る */
 function mergeKit(kit?: StartKit): StartKit {
-  if (!kit) return { ...BASE_KIT, talismans: {} };
+  if (!kit) return { ...BASE_KIT, potions: { ...BASE_KIT.potions }, talismans: {} };
+  const potions: Record<string, number> = { ...kit.potions };
+  for (const [kind, count] of Object.entries(BASE_KIT.potions)) {
+    potions[kind] = Math.max(count, potions[kind] ?? 0);
+  }
   return {
-    potions: Math.max(BASE_KIT.potions, kit.potions),
+    potions,
     food: Math.max(BASE_KIT.food, kit.food),
     stones: Math.max(BASE_KIT.stones, kit.stones),
     spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
@@ -223,6 +244,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       torch: 100,
       spareTorches: k.spareTorches,
       poisonTurns: 0,
+      hasteTurns: 0,
       weaponTier: k.weaponTier,
       hasTreasure: false,
       potions: k.potions,
@@ -250,7 +272,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
   };
 
   state.knowledge[0].walked.add(key(state.pos));
-  const events: string[] = [
+  const events: EventLine[] = [
     `あなたは「${character.name}」の入口に立っている。`,
     ...character.traitRumors.map((r) => `${r}（——酒場で聞いた話だ）`),
   ];
@@ -288,7 +310,7 @@ function lineOfSight(floor: Floor, from: Vec, to: Vec): boolean {
 }
 
 /** 現在地から見えるマスを知識に追加し、新たに見えたものについて情報の当否を検証する */
-function look(state: GameState, events: string[]): void {
+function look(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
   const radius = state.player.torch > 0 ? 2 : 1;
@@ -380,7 +402,7 @@ function correspondenceText(c: Claim): string {
 }
 
 /** 情報を検証済みにして、対応文の提示と計測を行う（§10・§12） */
-function settleClaim(state: GameState, c: Claim, events: string[]): void {
+function settleClaim(state: GameState, c: Claim, events: EventLine[]): void {
   c.verified = true;
   events.push(correspondenceText(c));
   recordInfo(state.telemetry, {
@@ -399,7 +421,7 @@ function settleClaim(state: GameState, c: Claim, events: string[]): void {
  * 箱を開けた/水を飲んだ時の検証。
  * 箱と水の安全性は「見る」だけでは決して判明しない——賭けた者だけが答えを知る
  */
-function verifyDecisionClaimsAt(state: GameState, pos: Vec, events: string[]): void {
+function verifyDecisionClaimsAt(state: GameState, pos: Vec, events: EventLine[]): void {
   const depth = currentFloor(state).depth;
   for (const c of [...state.claims, ...state.senses]) {
     if (c.verified || c.floorDepth !== depth) continue;
@@ -410,7 +432,7 @@ function verifyDecisionClaimsAt(state: GameState, pos: Vec, events: string[]): v
 }
 
 /** 主張位置（または実位置・実体）が視界に入ったら、その情報の当否を提示・計測する */
-function verifyClaims(state: GameState, events: string[]): void {
+function verifyClaims(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
   const pool = [...state.claims, ...state.senses];
@@ -471,7 +493,7 @@ export function currentMaterials(state: GameState): string[] {
 
 // ---- ターン共通処理 ----
 
-function advanceTurn(state: GameState, events: string[], hungerCost: number, torchCost: number): void {
+function advanceTurn(state: GameState, events: EventLine[], hungerCost: number, torchCost: number): void {
   state.turn++;
   const p = state.player;
   p.hunger = Math.min(120, p.hunger + hungerCost);
@@ -484,11 +506,15 @@ function advanceTurn(state: GameState, events: string[], hungerCost: number, tor
   if (p.poisonTurns > 0) {
     p.poisonTurns--;
     p.condition -= 3;
-    events.push('毒が体を蝕んでいる。');
+    events.push(bad('毒が体を蝕んでいる。'));
+  }
+  if (p.hasteTurns > 0) {
+    p.hasteTurns--;
+    if (p.hasteTurns === 0) events.push('体の軽さが抜けていく。風は行ってしまった。');
   }
   if (p.hunger >= 100) {
     p.condition -= 4;
-    events.push('飢えが体力を奪っていく。');
+    events.push(bad('飢えが体力を奪っていく。'));
   }
   if (p.condition <= 0) {
     die(state, events, '力尽きた。毒と飢えと暗闇が、静かに追いついてきたのだ。');
@@ -497,7 +523,7 @@ function advanceTurn(state: GameState, events: string[], hungerCost: number, tor
 
 // ---- 死亡・脱出 ----
 
-function die(state: GameState, events: string[], causeLine: string): void {
+function die(state: GameState, events: EventLine[], causeLine: string): void {
   if (state.phase === 'dead') return;
   state.phase = 'dead';
   const materials = state.pending?.materials ?? currentMaterials(state);
@@ -509,7 +535,7 @@ function die(state: GameState, events: string[], causeLine: string): void {
     '直前の判断材料：',
     ...materials.map((m) => `  ・${m}`),
   ];
-  events.push('あなたは倒れた。');
+  events.push(bad('あなたは倒れた。'));
   recordSummary(state.telemetry, {
     runSeed: state.instance.runSeed,
     characterId: state.instance.character.id,
@@ -520,7 +546,7 @@ function die(state: GameState, events: string[], causeLine: string): void {
   });
 }
 
-function escape(state: GameState, events: string[]): void {
+function escape(state: GameState, events: EventLine[]): void {
   state.phase = 'escaped';
   const p = state.player;
   state.escapeLog = [
@@ -532,7 +558,7 @@ function escape(state: GameState, events: string[]): void {
     conditionWord(p.condition) + '。' + armorWord(p.armorWear) + '。',
     '読んだ記録の当たり外れは、あなたの体が覚えているだろう。',
   ];
-  events.push('地上の光が見える。');
+  events.push(good('地上の光が見える。'));
   recordSummary(state.telemetry, {
     runSeed: state.instance.runSeed,
     characterId: state.instance.character.id,
@@ -590,7 +616,9 @@ export function availableActions(state: GameState): Action[] {
   if (here?.kind === 'stairsDown') actions.push({ type: 'descend' });
   if (here?.kind === 'stairsUp' && floor.depth > 1) actions.push({ type: 'ascend' });
   if (here?.kind === 'stairsUp' && floor.depth === 1) actions.push({ type: 'escape' });
-  if (state.player.potions > 0) actions.push({ type: 'drinkPotion' });
+  for (const [kind, count] of Object.entries(state.player.potions)) {
+    if (count > 0) actions.push({ type: 'drinkPotion', kind: kind as PotionKind });
+  }
   if (state.player.food > 0) actions.push({ type: 'eat' });
   return actions;
 }
@@ -659,11 +687,20 @@ function enemyStepToward(floor: Floor, from: Vec, to: Vec): Vec | null {
  * - 攻撃は「行動開始時に隣接していた」場合のみ＝追いつかれても1ターンは反応できる
  * @param holdId このターン動かない敵（退却直後の相手など）
  */
-function processEnemies(state: GameState, events: string[], holdId?: string): void {
+function processEnemies(state: GameState, events: EventLine[], holdId?: string): void {
   if (state.phase !== 'explore') return;
   const floor = currentFloor(state);
   for (const e of floor.entities) {
     if (!e.alive || e.dormant || e.id === holdId) continue;
+
+    // 眠りの札: 眠っている間は知覚も移動もしない
+    if ((e.sleepTurns ?? 0) > 0) {
+      e.sleepTurns!--;
+      if (e.sleepTurns === 0 && state.visibleNow.has(key(e.pos))) {
+        events.push(`${e.name}が身じろぎし、目を覚ました。`);
+      }
+      continue;
+    }
 
     // 知覚は毎ターン（動きが遅くても目はある）
     const sees =
@@ -684,6 +721,8 @@ function processEnemies(state: GameState, events: string[], holdId?: string): vo
     }
 
     if (state.turn % e.moveEvery !== 0) continue; // 重い敵は動けないターン
+    // 韋駄天の札: 体が軽いうちは、敵の足がみな半分に見える
+    if (state.player.hasteTurns > 0 && state.turn % 2 === 1) continue;
 
     if (e.chasing && e.lastSeen) {
       if (orthAdjacent(e.pos, state.pos)) {
@@ -720,7 +759,7 @@ function processEnemies(state: GameState, events: string[], holdId?: string): vo
 }
 
 /** 敵も罠を踏む——追われているなら、知っている罠の上を走って誘い込める */
-function enemyStepsOnTrap(state: GameState, e: Entity, events: string[]): void {
+function enemyStepsOnTrap(state: GameState, e: Entity, events: EventLine[]): void {
   const floor = currentFloor(state);
   const trap = featureAt(floor, e.pos);
   if (!trap || trap.kind !== 'trap' || trap.triggered) return;
@@ -737,15 +776,24 @@ function enemyStepsOnTrap(state: GameState, e: Entity, events: string[]): void {
 
 // ---- エンカウント ----
 
-function startEncounter(state: GameState, enemy: Entity, events: string[], lead?: string): void {
+function startEncounter(state: GameState, enemy: Entity, events: EventLine[], lead?: string): void {
   const assessment = assessDanger(state.player, enemy, state.instance.character);
   const soundByKind: Record<string, string> = {
     metallic: '金属の擦れる音を立てて、それは振り向いた。',
     beast: '低い唸りが喉の奥から漏れている。',
     shade: '空気が冷たく淀み、輪郭のない影が立ち塞がった。',
   };
-  events.push(lead ?? `${enemy.name}が行く手を塞いでいる。${soundByKind[enemy.kind]}`);
-  events.push(`（危険度：${assessment.label}）`);
+  const sleeping = (enemy.sleepTurns ?? 0) > 0;
+  events.push(
+    lead ??
+      (sleeping
+        ? `${enemy.name}が丸くなって寝息を立てている。今なら、こちらの間合いだ。`
+        : `${enemy.name}が行く手を塞いでいる。${soundByKind[enemy.kind]}`),
+  );
+  const labelLine = `（危険度：${assessment.label}）`;
+  events.push(
+    assessment.label === 'かなり危険' || assessment.label === '死の気配' ? bad(labelLine) : labelLine,
+  );
   const materials = [
     `${enemy.name}——危険度：${assessment.label}`,
     ...assessment.factors,
@@ -759,7 +807,7 @@ function startEncounter(state: GameState, enemy: Entity, events: string[], lead?
 }
 
 /** 先制の一投（§10: 賭けの結果は危険度ラベルの変化として即座に返す） */
-function resolveThrow(state: GameState, events: string[], pattern?: string): void {
+function resolveThrow(state: GameState, events: EventLine[], pattern?: string): void {
   const pending = state.pending!;
   const floor = currentFloor(state);
   const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
@@ -776,13 +824,41 @@ function resolveThrow(state: GameState, events: string[], pattern?: string): voi
     let effect: 'strong' | 'backfire' | 'neutral' = 'neutral';
     if (lore?.strongVs === enemy.kind) effect = 'strong';
     else if (lore?.backfireVs === enemy.kind) effect = 'backfire';
+    const family = lore?.effect ?? 'burn';
 
     if (effect === 'strong') {
-      enemy.strength = Math.max(0.05, enemy.strength - (0.28 + state.rng.next() * 0.08));
-      events.push(`${pattern}の札が触れた瞬間、${enemy.name}は灼かれたように仰け反った。`);
+      // 相性が良い: 系統どおりの力が出る（灼く/鈍らせる/眠らせる/韋駄天）
+      switch (family) {
+        case 'burn':
+          enemy.strength = Math.max(0.05, enemy.strength - (0.28 + state.rng.next() * 0.08));
+          events.push(good(`${pattern}の札が触れた瞬間、${enemy.name}は灼かれたように仰け反った。`));
+          break;
+        case 'slow':
+          enemy.moveEvery = Math.min(3, enemy.moveEvery + 1);
+          enemy.strength = Math.max(0.05, enemy.strength - (0.1 + state.rng.next() * 0.06));
+          events.push(good(`${pattern}の札が爆ぜると、${enemy.name}の動きが泥を掻くように鈍った。`));
+          break;
+        case 'sleep':
+          enemy.sleepTurns = 6 + Math.floor(state.rng.next() * 4);
+          enemy.chasing = false;
+          enemy.lastSeen = null;
+          events.push(good(`${pattern}の札が仄白く光り、${enemy.name}はその場に崩れて寝息を立て始めた。`));
+          break;
+        case 'haste':
+          p.hasteTurns = 12;
+          events.push(good(`${pattern}の札が爆ぜ、風があなたを包んだ。体が羽のように軽い。`));
+          break;
+      }
     } else if (effect === 'backfire') {
-      enemy.strength = Math.min(0.98, enemy.strength + (0.15 + state.rng.next() * 0.1));
-      events.push(`${pattern}の札は${enemy.name}に吸い込まれた——それは、昂っている。`);
+      // 相性が悪い: 力が相手に流れる
+      if (family === 'haste' || family === 'slow') {
+        enemy.moveEvery = 1;
+        enemy.strength = Math.min(0.98, enemy.strength + (0.08 + state.rng.next() * 0.08));
+        events.push(bad(`${pattern}の札の風は${enemy.name}に吸われた——奴の足が、速くなっている。`));
+      } else {
+        enemy.strength = Math.min(0.98, enemy.strength + (0.15 + state.rng.next() * 0.1));
+        events.push(bad(`${pattern}の札は${enemy.name}に吸い込まれた——それは、昂っている。`));
+      }
     } else {
       enemy.strength = Math.max(0.05, enemy.strength - (0.05 + state.rng.next() * 0.05));
       events.push(`${pattern}の札は爆ぜたが、石ほどの傷も残らなかった。`);
@@ -815,10 +891,10 @@ function resolveThrow(state: GameState, events: string[], pattern?: string): voi
       : `（危険度：${before} → ${pending.assessment.label}）`,
   );
 
-  // 投げた隙に踏み込まれることがある
-  if (state.rng.next() < pending.assessment.internalRisk * 0.2) {
+  // 投げた隙に踏み込まれることがある（眠らせた相手は踏み込んでこない）
+  if ((enemy.sleepTurns ?? 0) <= 0 && state.rng.next() < pending.assessment.internalRisk * 0.2) {
     p.condition -= 5 + Math.floor(state.rng.next() * 7);
-    events.push('投げた隙に、爪が掠めた。');
+    events.push(bad('投げた隙に、爪が掠めた。'));
     if (p.condition <= 0) {
       die(state, events, '投げた隙を突かれた。それが最後だった。');
     }
@@ -826,36 +902,47 @@ function resolveThrow(state: GameState, events: string[], pattern?: string): voi
 }
 
 /** 倒した敵の持ち物を必ず得る（挑む動機。何を持っているかは気配・記録が事前に匂わせる） */
-function lootCarry(state: GameState, enemy: Entity, events: string[]): void {
+/** 骸から薬を得る（種類は懐を漁って初めて分かる） */
+function gainPotion(state: GameState): PotionKind {
+  const kind = pickWeighted(state.rng, POTION_DROP);
+  const p = state.player;
+  p.potions[kind] = (p.potions[kind] ?? 0) + 1;
+  return kind;
+}
+
+function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
   const p = state.player;
   switch (enemy.carry) {
     case 'weapon':
       if (p.weaponTier >= 2) {
-        p.potions++;
-        events.push('奴が引きずっていた剣は今の得物に劣る。代わりに袋から薬瓶を抜き取った。');
+        const kind = gainPotion(state);
+        events.push(
+          good(`奴が引きずっていた剣は今の得物に劣る。代わりに袋から${POTION_NAMES[kind]}の瓶を抜き取った。`),
+        );
       } else {
         p.weaponTier = 2;
-        events.push('奴が引きずっていた剣を拾い上げる。刃はまだ生きている。');
+        events.push(good('奴が引きずっていた剣を拾い上げる。刃はまだ生きている。'));
       }
       break;
-    case 'potion':
-      p.potions++;
-      events.push('骸の懐から薬瓶が転がり出た。');
+    case 'potion': {
+      const kind = gainPotion(state);
+      events.push(good(`骸の懐から${POTION_NAMES[kind]}の瓶が転がり出た。`));
       break;
+    }
     case 'food':
       p.food++;
-      events.push('奴が漁っていた糧袋を回収した。まだ食える。');
+      events.push(good('奴が漁っていた糧袋を回収した。まだ食える。'));
       break;
     case 'treasure':
       p.hasTreasure = true;
-      events.push('骸の腕の中から、布に包まれた重みを取り上げた。宝だ。あとは、生きて帰るだけだ。');
+      events.push(good('骸の腕の中から、布に包まれた重みを取り上げた。宝だ。あとは、生きて帰るだけだ。'));
       break;
     case 'none':
       break;
   }
 }
 
-function resolveEngage(state: GameState, events: string[]): void {
+function resolveEngage(state: GameState, events: EventLine[]): void {
   const pending = state.pending!;
   const floor = currentFloor(state);
   const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
@@ -863,7 +950,9 @@ function resolveEngage(state: GameState, events: string[]): void {
   const label = pending.assessment.label;
   const p = state.player;
 
-  events.push(`あなたは${enemy.name}に挑んだ。`);
+  const sleeping = (enemy.sleepTurns ?? 0) > 0;
+  events.push(sleeping ? `あなたは眠りこける${enemy.name}に刃を立てた。` : `あなたは${enemy.name}に挑んだ。`);
+  enemy.sleepTurns = 0; // 刃を受ければ、眠りは終わる
   const roll = state.rng.next();
   if (roll < risk) {
     // 死亡か重傷か: リスクが高いほど「重傷で済む」余地が消える。
@@ -889,7 +978,7 @@ function resolveEngage(state: GameState, events: string[]): void {
     enemy.alive = false;
     p.condition -= 40 + Math.floor(state.rng.next() * 15);
     p.armorWear = Math.min(100, p.armorWear + 20);
-    events.push(`辛くも${enemy.name}を退けた。だが深手を負った。革鎧が裂けている。`);
+    events.push(bad(`辛くも${enemy.name}を退けた。だが深手を負った。革鎧が裂けている。`));
     // 激しい打ち合いで刃が欠けることがある（武器段階が下がる＝替えを探す動機）
     if (p.weaponTier > 0 && state.rng.next() < 0.5) {
       p.weaponTier--;
@@ -908,7 +997,8 @@ function resolveEngage(state: GameState, events: string[]): void {
     const dmg = 4 + Math.floor(enemy.strength * 14 * state.rng.next());
     p.condition -= dmg;
     p.armorWear = Math.min(100, p.armorWear + 5 + Math.floor(state.rng.next() * 8));
-    events.push(`${enemy.name}は動かなくなった。${dmg > 10 ? '浅くない傷を受けた。' : 'かすり傷で済んだ。'}`);
+    events.push(`${enemy.name}は動かなくなった。`);
+    events.push(dmg > 10 ? bad('浅くない傷を受けた。') : 'かすり傷で済んだ。');
     recordDanger(state.telemetry, {
       turn: state.turn,
       danger_label: label,
@@ -930,7 +1020,7 @@ function resolveEngage(state: GameState, events: string[]): void {
   if (state.phase === 'explore') look(state, events);
 }
 
-function resolveRetreat(state: GameState, events: string[]): void {
+function resolveRetreat(state: GameState, events: EventLine[]): void {
   const pending = state.pending!;
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
@@ -959,10 +1049,12 @@ function resolveRetreat(state: GameState, events: string[]): void {
     events.push(`下がる場所がない。壁を背に、${enemy.name}と睨み合う。`);
   }
 
-  if (state.rng.next() < risk * 0.35) {
+  // 韋駄天の札: 体が軽いうちの離脱は無傷（眠っている相手も追い打ちできない）
+  const cleanBreak = state.player.hasteTurns > 0 || (enemy.sleepTurns ?? 0) > 0;
+  if (!cleanBreak && state.rng.next() < risk * 0.35) {
     const dmg = 6 + Math.floor(state.rng.next() * 10);
     state.player.condition -= dmg;
-    events.push('離れ際、鋭い痛みが走った。');
+    events.push(bad('離れ際、鋭い痛みが走った。'));
     recordDanger(state.telemetry, {
       turn: state.turn,
       danger_label: pending.assessment.label,
@@ -993,7 +1085,7 @@ function resolveRetreat(state: GameState, events: string[]): void {
 
 // ---- 移動とタイルイベント ----
 
-function stepOnTile(state: GameState, events: string[]): void {
+function stepOnTile(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const p = state.player;
   const f = featureAt(floor, state.pos);
@@ -1004,7 +1096,7 @@ function stepOnTile(state: GameState, events: string[]): void {
           f.triggered = true;
           p.condition -= 12;
           p.poisonTurns = 4;
-          events.push('足元で乾いた音がした——毒の棘だ。痺れが脚を這い上がってくる。');
+          events.push(bad('足元で乾いた音がした——毒の棘だ。痺れが脚を這い上がってくる。'));
         } else {
           events.push('床に朽ちた仕掛けの残骸がある。もう動かない。');
         }
@@ -1027,7 +1119,7 @@ function stepOnTile(state: GameState, events: string[]): void {
         if (!f.taken) {
           f.taken = true;
           p.hasTreasure = true;
-          events.push('石台の上に、それはあった。井戸の底の宝だ。あとは、生きて帰るだけだ。');
+          events.push(good('石台の上に、それはあった。井戸の底の宝だ。あとは、生きて帰るだけだ。'));
         }
         break;
       case 'stairsUp':
@@ -1051,16 +1143,23 @@ function stepOnTile(state: GameState, events: string[]): void {
     item.taken = true;
     if (item.kind === 'food') {
       p.food++;
-      events.push('乾いた糧食が落ちている。まだ食べられそうだ。');
+      events.push(good('乾いた糧食が落ちている。まだ食べられそうだ。'));
     } else if (item.kind === 'potion') {
-      p.potions++;
-      events.push('濁った薬瓶を拾った。中身は振ってみても分からない。');
+      const kind = item.potionKind ?? 'murk';
+      p.potions[kind] = (p.potions[kind] ?? 0) + 1;
+      events.push(
+        good(
+          kind === 'murk'
+            ? '濁り薬の瓶を拾った。中身は振ってみても分からない。'
+            : `${POTION_NAMES[kind]}の瓶を拾った。銘はまだ読める。`,
+        ),
+      );
     } else if (item.kind === 'stone') {
       p.stones++;
-      events.push('手頃な石を拾った。投げるにはちょうどいい。');
+      events.push(good('手頃な石を拾った。投げるにはちょうどいい。'));
     } else if (item.kind === 'talisman' && item.pattern) {
       p.talismans[item.pattern] = (p.talismans[item.pattern] ?? 0) + 1;
-      events.push(`${item.pattern}の札が落ちている。模様の意味までは読めない。`);
+      events.push(good(`${item.pattern}の札が落ちている。模様の意味までは読めない。`));
     } else if (item.kind === 'weapon') {
       if (item.broken) {
         events.push('剣だ——だが手に取ると、刃は錆びて根元から折れた。使い物にならない。');
@@ -1068,13 +1167,13 @@ function stepOnTile(state: GameState, events: string[]): void {
         events.push('古びた剣が落ちている。だが今の得物で足りている。');
       } else {
         p.weaponTier = 2;
-        events.push('古びた剣を拾った。短剣よりずっと頼れる。');
+        events.push(good('古びた剣を拾った。短剣よりずっと頼れる。'));
       }
     }
   }
 }
 
-function doMove(state: GameState, dir: Dir, events: string[]): void {
+function doMove(state: GameState, dir: Dir, events: EventLine[]): void {
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
   const target = { x: state.pos.x + DIR_VEC[dir].x, y: state.pos.y + DIR_VEC[dir].y };
@@ -1117,7 +1216,7 @@ function doMove(state: GameState, dir: Dir, events: string[]): void {
 
 // ---- 耳を澄ます（気配情報の生成。§6.1 sense帯） ----
 
-function doListen(state: GameState, events: string[]): void {
+function doListen(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const know = state.knowledge[state.floorIndex];
   // まだ見えていない近くの対象を探す
@@ -1213,7 +1312,7 @@ function doListen(state: GameState, events: string[]): void {
 
 // ---- 箱と水（不可逆な賭け。§「検証行為そのものがリスク」） ----
 
-function doDrink(state: GameState, events: string[]): void {
+function doDrink(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const f = featureAt(floor, state.pos);
   if (!f || f.kind !== 'spring') return;
@@ -1221,16 +1320,16 @@ function doDrink(state: GameState, events: string[]): void {
   if (f.badWater) {
     p.condition -= 10;
     p.poisonTurns = 4;
-    events.push('一口含んで吐き出した。遅かった——舌を刺すほど苦い。悪い水だ。');
+    events.push(bad('一口含んで吐き出した。遅かった——舌を刺すほど苦い。悪い水だ。'));
   } else {
     p.condition = Math.min(100, p.condition + 20);
     p.hunger = Math.max(0, p.hunger - 20);
     f.uses = (f.uses ?? 0) + 1;
     if (f.uses >= 2) {
       f.kind = 'driedSpring';
-      events.push('澄んだ水で喉を潤した。……最後の一口で水脈は細り、泉は涸れた。');
+      events.push(good('澄んだ水で喉を潤した。……最後の一口で水脈は細り、泉は涸れた。'));
     } else {
-      events.push('冷たく澄んだ水だ。体の芯が少し軽くなった。');
+      events.push(good('冷たく澄んだ水だ。体の芯が少し軽くなった。'));
     }
   }
   verifyDecisionClaimsAt(state, state.pos, events);
@@ -1241,7 +1340,7 @@ function doDrink(state: GameState, events: string[]): void {
   advanceTurn(state, events, 0, 0.5);
 }
 
-function doOpen(state: GameState, events: string[]): void {
+function doOpen(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const f = featureAt(floor, state.pos);
   if (!f || f.kind !== 'chest' || f.opened) return;
@@ -1250,36 +1349,37 @@ function doOpen(state: GameState, events: string[]): void {
   switch (f.chestContent) {
     case 'weapon':
       if (p.weaponTier >= 2) {
-        p.potions++;
-        events.push('油紙に包まれた剣——だが今の得物で足りている。奥の薬瓶をもらっておく。');
+        const kind = gainPotion(state);
+        events.push(good(`油紙に包まれた剣——だが今の得物で足りている。奥の${POTION_NAMES[kind]}の瓶をもらっておく。`));
       } else {
         p.weaponTier = 2;
-        events.push('箱の中に、油紙に包まれた剣があった。刃は生きている。');
+        events.push(good('箱の中に、油紙に包まれた剣があった。刃は生きている。'));
       }
       break;
-    case 'potion':
-      p.potions++;
-      events.push('箱の中に薬瓶が収まっていた。当たりだ。');
+    case 'potion': {
+      const kind = gainPotion(state);
+      events.push(good(`箱の中に${POTION_NAMES[kind]}の瓶が収まっていた。当たりだ。`));
       break;
+    }
     case 'food':
       p.food++;
-      events.push('箱の中に蝋引きの包み——糧食だ。当たりだ。');
+      events.push(good('箱の中に蝋引きの包み——糧食だ。当たりだ。'));
       break;
     case 'talisman': {
       const patterns = Object.keys(state.instance.talismanLore);
       const pattern = pick(state.rng, patterns);
       p.talismans[pattern] = (p.talismans[pattern] ?? 0) + 1;
-      events.push(`箱の中に${pattern}の札が収められていた。模様の意味までは読めない。`);
+      events.push(good(`箱の中に${pattern}の札が収められていた。模様の意味までは読めない。`));
       break;
     }
     case 'treasure':
       p.hasTreasure = true;
-      events.push('布に包まれた重み——宝だ。この箱だったのか。あとは、生きて帰るだけだ。');
+      events.push(good('布に包まれた重み——宝だ。この箱だったのか。あとは、生きて帰るだけだ。'));
       break;
     case 'needle':
       p.condition -= 14;
       p.poisonTurns = 3;
-      events.push('蓋を開けた瞬間、留め金の奥で針が跳ねた。指先から痺れが這い上がる。');
+      events.push(bad('蓋を開けた瞬間、留め金の奥で針が跳ねた。指先から痺れが這い上がる。'));
       break;
     case 'mimic': {
       const mimic = floor.entities.find(
@@ -1308,7 +1408,7 @@ function doOpen(state: GameState, events: string[]): void {
 }
 
 /** 調べる: 箱・泉の安全性について、気配帯（p=0.6-0.8）の見立てを自力生成する */
-function doInspect(state: GameState, events: string[]): void {
+function doInspect(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const f = featureAt(floor, state.pos);
   if (!f || (f.kind !== 'chest' && f.kind !== 'spring')) return;
@@ -1369,7 +1469,7 @@ function doInspect(state: GameState, events: string[]): void {
 
 // ---- その他の行動 ----
 
-function doRest(state: GameState, events: string[]): void {
+function doRest(state: GameState, events: EventLine[]): void {
   const p = state.player;
   // 空腹だと休んでも回復しない（空腹・装備が効く、の学習材料 §7）
   if (p.hunger >= 100) {
@@ -1379,43 +1479,98 @@ function doRest(state: GameState, events: string[]): void {
     events.push('短く休んだ。腹の虫が鳴って、眠りは浅い。');
   } else {
     p.condition = Math.min(100, p.condition + 14);
-    events.push('壁に背を預け、短く休んだ。傷の手当てと、革鎧の紐を締め直す。');
+    events.push(good('壁に背を預け、短く休んだ。傷の手当てと、革鎧の紐を締め直す。'));
   }
   p.armorWear = Math.max(0, p.armorWear - 4); // 応急の手入れ
   advanceTurn(state, events, 2.5, 2);
 }
 
-function doDrinkPotion(state: GameState, events: string[]): void {
+function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]): void {
   const p = state.player;
-  p.potions--;
-  // 性格: 薬効の不安定さ（potionInstability）
-  if (state.rng.next() < state.instance.character.biases.potionInstability) {
+  if ((p.potions[kind] ?? 0) <= 0) return;
+  p.potions[kind]--;
+
+  if (kind === 'murk') {
+    // 濁り薬は素性の分からない賭け。大きく当たるか、何も起きないか、悪いものか
     const sub = state.rng.next();
-    if (sub < 0.4) {
-      events.push('薬を飲んだ。……何も起きない。ただの濁り水だったのか。');
-    } else if (sub < 0.7) {
+    if (sub < 0.3) {
+      p.condition = Math.min(100, p.condition + 45);
+      events.push(good('濁り薬を呷った。驚くほど効いた——傷の熱が一気に引いていく。'));
+    } else if (sub < 0.55) {
       p.condition = Math.min(100, p.condition + 12);
-      events.push('薬を飲んだ。効きは鈍いが、少しだけ楽になった。');
+      events.push('濁り薬を飲んだ。鈍いが、効いてはいるようだ。');
+    } else if (sub < 0.8) {
+      events.push('濁り薬を飲んだ。……何も起きない。ただの濁り水だったのか。');
     } else {
-      p.condition -= 6;
-      events.push('薬を飲んだ。腹の奥が焼けるように痛む。悪いものだったらしい。');
+      p.condition -= 8;
+      p.poisonTurns = 2;
+      events.push(bad('濁り薬を飲んだ。腹の奥が焼けるように痛む。悪いものだったらしい。'));
     }
-  } else {
-    p.condition = Math.min(100, p.condition + 30);
-    events.push('薬を飲んだ。温かいものが傷に染みわたる。よく効いた。');
+    advanceTurn(state, events, 0.5, 0.5);
+    return;
+  }
+
+  // 性格: 薬効の不安定さ（potionInstability）——銘のある薬でも、土地の水は染みる
+  const unstable = state.rng.next() < state.instance.character.biases.potionInstability * 0.45;
+  const potency = unstable ? (state.rng.next() < 0.5 ? 0.5 : 0) : 1;
+  switch (kind) {
+    case 'salve':
+      if (potency === 0) {
+        events.push('傷薬を飲んだ。……薬効が抜けている。何も起きない。');
+      } else {
+        p.condition = Math.min(100, p.condition + Math.round(26 * potency));
+        events.push(
+          good(potency === 1 ? '傷薬が染みわたる。傷の熱が引いていく。' : '傷薬を飲んだ。効きは鈍いが、少し楽になった。'),
+        );
+      }
+      break;
+    case 'elixir':
+      if (potency === 0) {
+        events.push('霊薬のはずだった。だが香りが飛んでいる。何も起きない。');
+      } else {
+        p.condition = Math.min(100, p.condition + Math.round(55 * potency));
+        if (potency === 1) {
+          p.poisonTurns = 0;
+          events.push(good('霊薬が喉を焼き、傷が見る間に塞がっていく。毒気まで洗われた。'));
+        } else {
+          events.push(good('霊薬の効きが鈍い。それでも、傷はいくらか軽くなった。'));
+        }
+      }
+      break;
+    case 'antidote':
+      if (potency === 0) {
+        events.push('解毒薬を飲んだが、舌に残るのは水の味だけだ。');
+      } else if (p.poisonTurns > 0) {
+        p.poisonTurns = 0;
+        p.condition = Math.min(100, p.condition + 6);
+        events.push(good('苦い解毒薬が、血の中の毒を洗い流した。'));
+      } else {
+        p.condition = Math.min(100, p.condition + 4);
+        events.push('解毒薬を飲んだ。毒はないが、腹の底が少し温まった。');
+      }
+      break;
+    case 'tonic':
+      if (potency === 0) {
+        events.push('滋養薬を飲んだが、水のように薄い。誰かが薄めたか。');
+      } else {
+        p.hunger = Math.max(0, p.hunger - Math.round(45 * potency));
+        p.condition = Math.min(100, p.condition + Math.round(8 * potency));
+        events.push(good('滋養薬は重く甘い。腹の底に力が戻ってくる。'));
+      }
+      break;
   }
   advanceTurn(state, events, 0.5, 0.5);
 }
 
-function doEat(state: GameState, events: string[]): void {
+function doEat(state: GameState, events: EventLine[]): void {
   const p = state.player;
   p.food--;
   p.hunger = Math.max(0, p.hunger - 40);
-  events.push('乾いた糧食をかじった。味は薄いが、腹は落ち着いた。');
+  events.push(good('乾いた糧食をかじった。味は薄いが、腹は落ち着いた。'));
   advanceTurn(state, events, 0, 0.5);
 }
 
-function doDescend(state: GameState, events: string[]): void {
+function doDescend(state: GameState, events: EventLine[]): void {
   state.floorIndex++;
   state.deepestVisited = Math.max(state.deepestVisited, state.floorIndex + 1);
   const floor = currentFloor(state);
@@ -1429,13 +1584,13 @@ function doDescend(state: GameState, events: string[]): void {
   if (state.phase === 'explore') look(state, events);
 }
 
-function doAscend(state: GameState, events: string[]): void {
+function doAscend(state: GameState, events: EventLine[]): void {
   const floor = currentFloor(state);
   const up = featureAt(floor, state.pos)!;
   if (up.crumbling) {
     // 性格: 下層ほど帰還困難（lowerReturnDifficulty）
     state.player.condition -= 8;
-    events.push('崩れかけた階段をよじ登る。足場が二度抜け、膝を打った。');
+    events.push(bad('崩れかけた階段をよじ登る。足場が二度抜け、膝を打った。'));
   } else {
     events.push('階段を上る。');
   }
@@ -1455,9 +1610,9 @@ function doAscend(state: GameState, events: string[]): void {
 
 // ---- ステップ（1ターン処理 §11） ----
 
-export function step(state: GameState, action: Action): string[] {
+export function step(state: GameState, action: Action): EventLine[] {
   if (state.phase === 'dead' || state.phase === 'escaped') return [];
-  const events: string[] = [];
+  const events: EventLine[] = [];
   recordChoice(state.telemetry, { turn: state.turn, action: action.type });
 
   if (state.phase === 'encounter') {
@@ -1481,7 +1636,7 @@ export function step(state: GameState, action: Action): string[] {
       doRest(state, events);
       break;
     case 'drinkPotion':
-      doDrinkPotion(state, events);
+      doDrinkPotion(state, action.kind, events);
       break;
     case 'eat':
       doEat(state, events);

@@ -1,7 +1,8 @@
 // 画面HTML組み立て §11
 // core の状態を読んで各パネルのHTML片を組み立てるだけ。ゲームロジックは持たない。
 // 数字は一切表示しない（憲法5）。
-// 色は記号の「種類」にだけ使う。情報の信頼度を色分けすることは決してしない——
+// 色は記号の「種類」と「起きた事実」（被弾=赤・回復や実入り=緑）にだけ使う。
+// 情報の信頼度を色分けすることは決してしない——
 // 信頼度は字の乱れ・紙の状態の手がかり語彙で読ませる（憲法6の体験を色で先回りしない）。
 
 import { SOURCE_NAMES } from '../core/confidence';
@@ -11,10 +12,14 @@ import {
   armorWord,
   conditionWord,
   currentFloor,
+  eventText,
+  eventTone,
   hungerWord,
   KIND_WORD,
+  POTION_NAMES,
   torchWord,
   weaponWord,
+  type EventLine,
   type GameState,
 } from '../core/state';
 import type { Vec } from '../core/types';
@@ -120,14 +125,19 @@ function torchClass(torch: number): string {
 
 // ---- 各パネル ----
 
-/** 出来事: 直近ターンが明るく、過去は薄れる（履歴はUI層が持つ） */
-function renderEventsHtml(history: string[][]): string {
+/** 出来事: 直近ターンが明るく、過去は薄れる（履歴はUI層が持つ）。
+ *  被弾・悪化は赤、回復・実入りは緑（toneはcoreが「起きた事実」にだけ付ける） */
+function renderEventsHtml(history: EventLine[][]): string {
   const shown = history.slice(-3);
   const items: string[] = [];
   shown.forEach((group, i) => {
     const age = shown.length - 1 - i; // 0=最新
-    const cls = age === 0 ? '' : ` class="old${age}"`;
-    for (const line of group) items.push(`<li${cls}>${escapeHtml(line)}</li>`);
+    for (const line of group) {
+      const tone = eventTone(line);
+      const classes = [age > 0 ? `old${age}` : '', tone ? `t-${tone}` : ''].filter(Boolean);
+      const cls = classes.length > 0 ? ` class="${classes.join(' ')}"` : '';
+      items.push(`<li${cls}>${escapeHtml(eventText(line))}</li>`);
+    }
   });
   return items.join('');
 }
@@ -163,8 +173,12 @@ function renderStatusHtml(state: GameState): string {
     `<div class="line">${armorWord(p.armorWear)}。${torchWord(p.torch, p.spareTorches)}。</div>`,
   ];
   if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
+  if (p.hasteTurns > 0) lines.push('<div class="line good">体が羽のように軽い。</div>');
   const carry: string[] = [`得物は${weaponWord(p.weaponTier)}`];
-  if (p.potions > 0) carry.push(p.potions > 1 ? '薬（いくつか）' : '薬');
+  for (const [kind, count] of Object.entries(p.potions)) {
+    if (count <= 0) continue;
+    carry.push(`${POTION_NAMES[kind] ?? '薬'}${count > 1 ? '（いくつか）' : ''}`);
+  }
   if (p.food > 0) carry.push(p.food > 1 ? '糧食（いくつか）' : '糧食');
   if (p.stones > 0) carry.push(p.stones > 1 ? '石（いくつか）' : '石');
   for (const [pattern, count] of Object.entries(p.talismans)) {
@@ -208,11 +222,11 @@ function renderDebug(state: GameState): string {
   );
   lines.push(
     `札: ${Object.entries(state.instance.talismanLore)
-      .map(([pt, l]) => `${pt}→効く:${l.strongVs}/逆:${l.backfireVs}`)
+      .map(([pt, l]) => `${pt}→系統:${l.effect}/効く:${l.strongVs}/逆:${l.backfireVs}`)
       .join(' ')} 石=${state.player.stones} 札所持=${JSON.stringify(state.player.talismans)}`,
   );
   lines.push(
-    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure}`,
+    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
   );
   if (state.pending) {
     const a = state.pending.assessment;
@@ -223,7 +237,7 @@ function renderDebug(state: GameState): string {
     const risk = assessDanger(p, e, state.instance.character);
     lines.push(
       `敵 ${e.id} ${e.name} (${e.pos.x},${e.pos.y}) str=${e.strength.toFixed(2)} speed=1/${e.moveEvery}` +
-        ` carry=${e.carry}${e.dormant ? ' 潜伏' : e.chasing ? ` 追跡中 lastSeen=(${e.lastSeen?.x},${e.lastSeen?.y}) lost=${e.lostTurns}` : ' 徘徊'}` +
+        ` carry=${e.carry}${e.dormant ? ' 潜伏' : (e.sleepTurns ?? 0) > 0 ? ` 睡眠${e.sleepTurns}` : e.chasing ? ` 追跡中 lastSeen=(${e.lastSeen?.x},${e.lastSeen?.y}) lost=${e.lostTurns}` : ' 徘徊'}` +
         ` risk=${risk.internalRisk.toFixed(2)}（${risk.label}）`,
     );
   }
@@ -251,7 +265,7 @@ function renderDebug(state: GameState): string {
 export type RenderOptions = {
   debug?: boolean;
   /** 出来事の履歴（新しいものが末尾。UI層が保持する） */
-  eventHistory?: string[][];
+  eventHistory?: EventLine[][];
 };
 
 export type ScreenView = {

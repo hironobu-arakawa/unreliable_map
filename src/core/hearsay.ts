@@ -21,6 +21,7 @@ import type {
   Floor,
   InfoSource,
   MissPattern,
+  TalismanEffect,
   Vec,
 } from './types';
 import { KIND_WORD } from './character';
@@ -134,11 +135,14 @@ function jitterPos(rng: RNG, floor: Floor, p: Vec): Vec {
   return { x: Math.max(1, p.x - 1), y: p.y };
 }
 
-/** 通路らしい床セル（直線の途中）を1つ探す */
+/** 通路らしい床セル（直線の途中）を1つ探す。
+ *  敵の立つセルは避ける——敵情報が「誤認」に解決されると、その位置に罠の残骸が
+ *  植えられるため、held な通路情報と同じセルで衝突し得る（憲法1が壊れる） */
 function findCorridorCell(rng: RNG, floor: Floor): Vec | null {
   const cells = shuffle(rng, floorCells(floor));
   for (const c of cells) {
     if (featureAt(floor, c)) continue;
+    if (floor.entities.some((e) => e.alive && e.pos.x === c.x && e.pos.y === c.y)) continue;
     const n = isWalkable(floor, { x: c.x, y: c.y - 1 });
     const s = isWalkable(floor, { x: c.x, y: c.y + 1 });
     const w = isWalkable(floor, { x: c.x - 1, y: c.y });
@@ -455,9 +459,16 @@ export function applyHearsay(instance: DungeonInstance, runSeed: number): Claim[
       const wrong = kinds.filter((k) => k !== targetKind);
       targetKind = pick(rng, wrong);
     }
+    // 「効く」の噂は系統まで語る（系統は真実。外れるのは相手の取り違えだけ）
+    const strongText: Record<TalismanEffect, string> = {
+      burn: `「${pattern}の札は${KIND_WORD[targetKind]}を灼く」と手記の端にある。`,
+      slow: `「${pattern}の札は${KIND_WORD[targetKind]}の足を縛る」と手記の端にある。`,
+      sleep: `「${pattern}の札は${KIND_WORD[targetKind]}を眠らせる」と手記の端にある。`,
+      haste: `「${KIND_WORD[targetKind]}に遭ったら${pattern}の札を切れ。翼が生える」と手記の端にある。`,
+    };
     const text =
       aspect === 'strong'
-        ? `「${pattern}の札は${KIND_WORD[targetKind]}を退ける」と手記の端にある。`
+        ? strongText[truth.effect]
         : `「${pattern}の札を${KIND_WORD[targetKind]}に向けるな」と走り書きがある。`;
     claims.push({
       id: `c${claimNo}`,

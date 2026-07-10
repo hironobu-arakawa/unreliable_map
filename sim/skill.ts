@@ -225,8 +225,22 @@ function run(seed: number, brain: Brain): RunResult {
       step(state, { type: 'eat' });
       continue;
     }
-    if (p.condition <= 30 && has('drinkPotion')) {
-      step(state, { type: 'drinkPotion' });
+    const potionActs = actions.filter(
+      (a): a is Extract<Action, { type: 'drinkPotion' }> => a.type === 'drinkPotion',
+    );
+    // 毒には解毒薬、傷には回復系（傷薬・霊薬・濁り薬）
+    if (p.poisonTurns > 2) {
+      const antidote = potionActs.find((a) => a.kind === 'antidote');
+      if (antidote) {
+        step(state, antidote);
+        continue;
+      }
+    }
+    if (p.condition <= 30 && potionActs.length > 0) {
+      const heal =
+        potionActs.find((a) => a.kind === 'salve' || a.kind === 'elixir' || a.kind === 'murk') ??
+        potionActs[0];
+      step(state, heal);
       continue;
     }
     const visibleEnemies = floor.entities.filter(
