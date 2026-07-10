@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/hironobu/Documents/src/unreliable_map status --short)",
+      "Bash(git -C /Users/hironobu/Documents/src/unreliable_map log --oneline -3)",
+      "Bash(git -C /Users/hironobu/Documents/src/unreliable_map remote -v)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
+    ]
+  }
+}
