@@ -2,6 +2,7 @@
 // core はUIもDOMも一切触らない。副作用は注入されたPRNGのみ（§4.1）。
 
 import type {
+  ArmorGear,
   Claim,
   DungeonInstance,
   Entity,
@@ -10,12 +11,14 @@ import type {
   PlayerState,
   PotionKind,
   Vec,
-  WeaponTier,
+  WeaponGear,
 } from './types';
 import type { DungeonCharacter } from './types';
 import { KIND_WORD, POTION_DROP, POTION_NAMES } from './character';
 import { confidenceLabel, drawCue, drawInternalP, SOURCE_NAMES } from './confidence';
+import { addWeapon, ARMOR_DATA, armorGuard, armorWord, weaponBetter, weaponWord } from './gear';
 export { KIND_WORD, POTION_NAMES };
+export { armorWord, weaponWord } from './gear';
 import { assessDanger, type DangerAssessment } from './danger';
 import { enemyAt, featureAt, generateInstance, isWalkable, itemAt, tileAt } from './generate';
 import { applyHearsay } from './hearsay';
@@ -90,12 +93,6 @@ export function hungerWord(h: number): string {
   return '飢えている';
 }
 
-export function armorWord(w: number): string {
-  if (w < 40) return '革鎧はまだ保つ';
-  if (w < 70) return '革鎧は傷んでいる';
-  return '革鎧はぼろぼろだ';
-}
-
 export function torchWord(torch: number, spares: number): string {
   const flame =
     torch > 60
@@ -107,12 +104,6 @@ export function torchWord(torch: number, spares: number): string {
           : '明かりが消えている';
   const spare = spares >= 2 ? '予備はまだある' : spares === 1 ? '予備は最後の一本だ' : '予備はもうない';
   return `${flame}（${spare}）`;
-}
-
-export function weaponWord(tier: number): string {
-  if (tier >= 2) return '剣';
-  if (tier === 1) return '傷んだ短剣';
-  return '素手';
 }
 
 // ---- ゲーム状態 ----
@@ -199,7 +190,10 @@ export type StartKit = {
   food: number;
   stones: number;
   spareTorches: number;
-  weaponTier: WeaponTier;
+  /** 手持ちの得物（先頭が最良）。空ならギルドの標準（傷んだ短剣）が支給される */
+  weapons: WeaponGear[];
+  /** 着ている鎧。null ならギルドの標準（革鎧）が支給される */
+  armor: ArmorGear | null;
   talismans: Record<string, number>;
 };
 
@@ -209,23 +203,37 @@ export const BASE_KIT: StartKit = {
   food: 2,
   stones: 2,
   spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
-  weaponTier: 1, // 傷んだ短剣。丸腰で潜る冒険者はいない
+  weapons: [{ kind: 'dagger', wear: 45 }], // 傷んだ短剣。丸腰で潜る冒険者はいない
+  armor: { kind: 'leather', wear: 10 },
   talismans: {},
 };
 
-/** 項目ごとにギルドの標準と持ち越しの多い方を採る */
+/** 項目ごとにギルドの標準と持ち越しの多い方を採る（装備は深いコピー——帳面の品を潜行が汚さない） */
 function mergeKit(kit?: StartKit): StartKit {
-  if (!kit) return { ...BASE_KIT, potions: { ...BASE_KIT.potions }, talismans: {} };
+  const baseWeapons = BASE_KIT.weapons.map((w) => ({ ...w }));
+  const baseArmor = BASE_KIT.armor ? { ...BASE_KIT.armor } : null;
+  if (!kit) {
+    return {
+      ...BASE_KIT,
+      potions: { ...BASE_KIT.potions },
+      talismans: {},
+      weapons: baseWeapons,
+      armor: baseArmor,
+    };
+  }
   const potions: Record<string, number> = { ...kit.potions };
   for (const [kind, count] of Object.entries(BASE_KIT.potions)) {
     potions[kind] = Math.max(count, potions[kind] ?? 0);
   }
+  const weapons = kit.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w }));
+  weapons.sort((a, b) => (weaponBetter(a, b) ? -1 : 1));
   return {
     potions,
     food: Math.max(BASE_KIT.food, kit.food),
     stones: Math.max(BASE_KIT.stones, kit.stones),
     spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
-    weaponTier: Math.max(BASE_KIT.weaponTier, kit.weaponTier) as WeaponTier,
+    weapons: weapons.length > 0 ? weapons : baseWeapons,
+    armor: kit.armor ? { ...kit.armor } : baseArmor,
     talismans: { ...kit.talismans },
   };
 }
@@ -244,12 +252,12 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     player: {
       condition: 100,
       hunger: 10,
-      armorWear: 10,
       torch: 100,
       spareTorches: k.spareTorches,
       poisonTurns: 0,
       hasteTurns: 0,
-      weaponTier: k.weaponTier,
+      weapons: k.weapons,
+      armor: k.armor,
       hasTreasure: false,
       potions: k.potions,
       food: k.food,
@@ -339,7 +347,7 @@ function sourceName(c: Claim): string {
 
 /** 箱の中身が「当たり」か */
 function chestGood(actualKind: string): boolean {
-  return ['chest_weapon', 'chest_potion', 'chest_food'].includes(actualKind);
+  return ['chest_weapon', 'chest_armor', 'chest_potion', 'chest_food'].includes(actualKind);
 }
 
 /** 検証時の対応文（なぜ外れたかが必ず言葉で残る。憲法4）。
@@ -477,9 +485,9 @@ export function currentMaterials(state: GameState): string[] {
   const p = state.player;
   out.push(conditionWord(p.condition));
   out.push(hungerWord(p.hunger));
-  out.push(armorWord(p.armorWear));
+  out.push(armorWord(p.armor));
   out.push(torchWord(p.torch, p.spareTorches));
-  out.push(`得物は${weaponWord(p.weaponTier)}`);
+  out.push(`得物は${weaponWord(p.weapons[0])}`);
   if (p.poisonTurns > 0) out.push('毒が回っている');
   const depth = currentFloor(state).depth;
   for (const c of state.claims) {
@@ -559,7 +567,7 @@ function escape(state: GameState, events: EventLine[]): void {
       ? 'あなたは井戸の底の宝を携え、光の下へ戻ってきた。'
       : 'あなたは手ぶらで、しかし生きて戻ってきた。それで十分だ。',
     `最深到達: 地下${state.deepestVisited}階。`,
-    conditionWord(p.condition) + '。' + armorWord(p.armorWear) + '。',
+    conditionWord(p.condition) + '。' + armorWord(p.armor) + '。',
     '読んだ記録の当たり外れは、あなたの体が覚えているだろう。',
   ];
   events.push(good('地上の光が見える。'));
@@ -905,6 +913,66 @@ function resolveThrow(state: GameState, events: EventLine[], pattern?: string): 
   }
 }
 
+// ---- 装備の傷みと入手 ----
+
+/** 鎧が打撃を受けて傷む。100で体をなさなくなる */
+function wearArmor(state: GameState, amount: number, events: EventLine[]): void {
+  const p = state.player;
+  if (!p.armor) return;
+  p.armor.wear = Math.min(100, p.armor.wear + amount);
+  if (p.armor.wear >= 100) {
+    events.push(bad(`${ARMOR_DATA[p.armor.kind].name}が裂けて崩れ落ちた。もう体をなさない。`));
+    p.armor = null;
+  }
+}
+
+/** 得物が打ち合いで擦り減る。100で折れ、腰の予備に持ち替える */
+function wearWeapon(state: GameState, amount: number, events: EventLine[]): void {
+  const p = state.player;
+  const w = p.weapons[0];
+  if (!w) return;
+  w.wear = Math.min(100, w.wear + amount);
+  if (w.wear >= 100) {
+    p.weapons.shift();
+    const next = p.weapons[0];
+    events.push(
+      next
+        ? bad(`得物は根元から折れた——腰の${weaponWord(next)}に持ち替える。`)
+        : bad('得物は根元から折れた。もう素手だ。'),
+    );
+  }
+}
+
+/** 得物を手に入れる。今のものより良ければ持ち替え、劣るなら予備として携える */
+function gainWeapon(state: GameState, w: WeaponGear, events: EventLine[], lead: string): void {
+  const p = state.player;
+  const current = p.weapons[0];
+  addWeapon(p.weapons, w);
+  if (!current || weaponBetter(w, current)) {
+    events.push(good(`${lead}${weaponWord(w)}だ。得物を持ち替える。`));
+  } else {
+    events.push(good(`${lead}${weaponWord(w)}——今の得物には劣るが、予備として腰に差した。`));
+  }
+}
+
+/** 鎧を手に入れる。守りが上なら着替える（着ていたものは置いていく） */
+function gainArmor(state: GameState, a: ArmorGear, events: EventLine[], lead: string): void {
+  const p = state.player;
+  if (armorGuard(a) > armorGuard(p.armor)) {
+    const old = p.armor;
+    p.armor = a;
+    events.push(
+      good(
+        old
+          ? `${lead}${ARMOR_DATA[a.kind].name}だ。${ARMOR_DATA[old.kind].name}を脱ぎ捨てて着替えた。`
+          : `${lead}${ARMOR_DATA[a.kind].name}だ。ありがたく身に着ける。`,
+      ),
+    );
+  } else {
+    events.push(`${lead}${ARMOR_DATA[a.kind].name}——だが今の守りの方が上だ。置いていく。`);
+  }
+}
+
 /** 倒した敵の持ち物を必ず得る（挑む動機。何を持っているかは気配・記録が事前に匂わせる） */
 /** 骸から薬を得る（種類は懐を漁って初めて分かる） */
 function gainPotion(state: GameState): PotionKind {
@@ -918,15 +986,12 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
   const p = state.player;
   switch (enemy.carry) {
     case 'weapon':
-      if (p.weaponTier >= 2) {
-        const kind = gainPotion(state);
-        events.push(
-          good(`奴が引きずっていた剣は今の得物に劣る。代わりに袋から${POTION_NAMES[kind]}の瓶を抜き取った。`),
-        );
-      } else {
-        p.weaponTier = 2;
-        events.push(good('奴が引きずっていた剣を拾い上げる。刃はまだ生きている。'));
-      }
+      gainWeapon(
+        state,
+        { kind: 'sword', wear: 15 + Math.floor(state.rng.next() * 45) },
+        events,
+        '奴が引きずっていたのは',
+      );
       break;
     case 'potion': {
       const kind = gainPotion(state);
@@ -981,13 +1046,10 @@ function resolveEngage(state: GameState, events: EventLine[]): void {
     // 重傷: 倒しはしたが深手を負う
     enemy.alive = false;
     p.condition -= 40 + Math.floor(state.rng.next() * 15);
-    p.armorWear = Math.min(100, p.armorWear + 20);
-    events.push(bad(`辛くも${enemy.name}を退けた。だが深手を負った。革鎧が裂けている。`));
-    // 激しい打ち合いで刃が欠けることがある（武器段階が下がる＝替えを探す動機）
-    if (p.weaponTier > 0 && state.rng.next() < 0.5) {
-      p.weaponTier--;
-      events.push(p.weaponTier === 0 ? '得物は根元から折れた。' : '打ち合いで刃が大きく欠けた。');
-    }
+    events.push(bad(`辛くも${enemy.name}を退けた。だが深手を負った。`));
+    // 激しい打ち合いは鎧を裂き、刃を欠けさせる（替えを探す動機）
+    wearArmor(state, 18 + Math.floor(state.rng.next() * 10), events);
+    wearWeapon(state, 22 + Math.floor(state.rng.next() * 18), events);
     recordDanger(state.telemetry, {
       turn: state.turn,
       danger_label: label,
@@ -1000,9 +1062,10 @@ function resolveEngage(state: GameState, events: EventLine[]): void {
     enemy.alive = false;
     const dmg = 4 + Math.floor(enemy.strength * 14 * state.rng.next());
     p.condition -= dmg;
-    p.armorWear = Math.min(100, p.armorWear + 5 + Math.floor(state.rng.next() * 8));
     events.push(`${enemy.name}は動かなくなった。`);
     events.push(dmg > 10 ? bad('浅くない傷を受けた。') : 'かすり傷で済んだ。');
+    wearArmor(state, 4 + Math.floor(state.rng.next() * 8), events);
+    wearWeapon(state, 3 + Math.floor(state.rng.next() * 6), events);
     recordDanger(state.telemetry, {
       turn: state.turn,
       danger_label: label,
@@ -1167,11 +1230,13 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
     } else if (item.kind === 'weapon') {
       if (item.broken) {
         events.push('剣だ——だが手に取ると、刃は錆びて根元から折れた。使い物にならない。');
-      } else if (p.weaponTier >= 2) {
-        events.push('古びた剣が落ちている。だが今の得物で足りている。');
       } else {
-        p.weaponTier = 2;
-        events.push(good('古びた剣を拾った。短剣よりずっと頼れる。'));
+        gainWeapon(
+          state,
+          { kind: 'sword', wear: 25 + Math.floor(state.rng.next() * 35) },
+          events,
+          '床に落ちていたのは',
+        );
       }
     }
   }
@@ -1352,13 +1417,20 @@ function doOpen(state: GameState, events: EventLine[]): void {
   f.opened = true;
   switch (f.chestContent) {
     case 'weapon':
-      if (p.weaponTier >= 2) {
-        const kind = gainPotion(state);
-        events.push(good(`油紙に包まれた剣——だが今の得物で足りている。奥の${POTION_NAMES[kind]}の瓶をもらっておく。`));
-      } else {
-        p.weaponTier = 2;
-        events.push(good('箱の中に、油紙に包まれた剣があった。刃は生きている。'));
-      }
+      gainWeapon(
+        state,
+        { kind: 'sword', wear: 10 + Math.floor(state.rng.next() * 35) },
+        events,
+        '箱の中にあったのは油紙に包まれた',
+      );
+      break;
+    case 'armor':
+      gainArmor(
+        state,
+        { kind: 'chain', wear: 15 + Math.floor(state.rng.next() * 40) },
+        events,
+        '箱の底に畳まれていたのは',
+      );
       break;
     case 'potion': {
       const kind = gainPotion(state);
@@ -1483,9 +1555,9 @@ function doRest(state: GameState, events: EventLine[]): void {
     events.push('短く休んだ。腹の虫が鳴って、眠りは浅い。');
   } else {
     p.condition = Math.min(100, p.condition + 14);
-    events.push(good('壁に背を預け、短く休んだ。傷の手当てと、革鎧の紐を締め直す。'));
+    events.push(good('壁に背を預け、短く休んだ。傷の手当てと、鎧の紐を締め直す。'));
   }
-  p.armorWear = Math.max(0, p.armorWear - 4); // 応急の手入れ
+  if (p.armor) p.armor.wear = Math.max(0, p.armor.wear - 4); // 応急の手入れ
   advanceTurn(state, events, 2.5, 2);
 }
 

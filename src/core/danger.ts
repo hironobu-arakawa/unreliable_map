@@ -2,6 +2,7 @@
 // プレイヤーの現在状態（装備・空腹・体調・光源）と敵の強さから死亡/重傷確率を計算し、
 // ラベルに射影する。数字はUIに出さない（憲法5）。
 
+import { ARMOR_DATA, armorWord, weaponPower } from './gear';
 import type { DungeonCharacter, Entity, PlayerState } from './types';
 
 export type DangerLabel =
@@ -45,20 +46,30 @@ export function assessDanger(
   // 敵の地力: strength(0..1) と性格の enemyLethality を合成
   let risk = 0.08 + enemy.strength * 0.45 + character.biases.enemyLethality * 0.12;
 
-  // 武器の段階: 1（初期の短剣）が基準。剣なら下がり、折れて素手なら上がる
-  if (player.weaponTier >= 2) {
-    risk -= 0.12;
-  } else if (player.weaponTier === 0) {
-    risk += 0.1;
+  // 得物: 短剣（威力0.16）を基準に、実効打撃力の差がそのまま危険度に効く
+  // （剣なら下がり、折れて素手なら上がる。刃の傷みも連続的に効く）
+  const power = weaponPower(player.weapons[0]);
+  risk -= (power - 0.16) * 1.2;
+  if (!player.weapons[0]) {
     factors.push('まともな得物がない');
+  } else if (player.weapons[0].wear >= 70) {
+    factors.push('刃はいまにも折れそうだ');
   }
 
-  if (player.armorWear >= 70) {
+  // 鎧: 革鎧を基準に、上等な鎧は下げ、傷み・喪失は上げる
+  const armor = player.armor;
+  if (!armor) {
     risk += 0.14;
-    factors.push('革鎧はぼろぼろだ');
-  } else if (player.armorWear >= 40) {
-    risk += 0.08;
-    factors.push('革鎧は傷んでいる');
+    factors.push('身を守るものがない');
+  } else {
+    risk -= (ARMOR_DATA[armor.kind].guard - 0.15) * 0.6;
+    if (armor.wear >= 70) {
+      risk += 0.14;
+      factors.push(armorWord(armor));
+    } else if (armor.wear >= 40) {
+      risk += 0.08;
+      factors.push(armorWord(armor));
+    }
   }
 
   if (player.hunger >= 80) {

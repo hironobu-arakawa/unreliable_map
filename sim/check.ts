@@ -89,7 +89,7 @@ function snapshot(instance: DungeonInstance, hearsay: { memos: unknown; claims: 
           (c.kind === 'chest' &&
             f?.kind === 'chest' &&
             (c.assertedSafety === 'good') ===
-              ['weapon', 'potion', 'food'].includes(f.chestContent ?? '')) ||
+              ['weapon', 'armor', 'potion', 'food'].includes(f.chestContent ?? '')) ||
           (c.kind === 'trap' && f?.kind === 'trap' && !f?.triggered) ||
           (c.kind === 'treasure' &&
             ((f?.kind === 'chest' && f.chestContent === 'treasure') ||

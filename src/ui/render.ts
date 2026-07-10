@@ -187,11 +187,12 @@ function renderStatusHtml(state: GameState): string {
   const p = state.player;
   const lines: string[] = [
     `<div class="line">${conditionWord(p.condition)}。${hungerWord(p.hunger)}。</div>`,
-    `<div class="line">${armorWord(p.armorWear)}。${torchWord(p.torch, p.spareTorches)}。</div>`,
+    `<div class="line">${armorWord(p.armor)}。${torchWord(p.torch, p.spareTorches)}。</div>`,
   ];
   if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
   if (p.hasteTurns > 0) lines.push('<div class="line good">体が羽のように軽い。</div>');
-  const carry: string[] = [`得物は${weaponWord(p.weaponTier)}`];
+  const carry: string[] = [`得物は${weaponWord(p.weapons[0])}`];
+  for (const w of p.weapons.slice(1)) carry.push(`替えの${weaponWord(w)}`);
   for (const [kind, count] of Object.entries(p.potions)) {
     if (count <= 0) continue;
     carry.push(`${POTION_NAMES[kind] ?? '薬'}${count > 1 ? '（いくつか）' : ''}`);
@@ -243,7 +244,7 @@ function renderDebug(state: GameState): string {
       .join(' ')} 石=${state.player.stones} 札所持=${JSON.stringify(state.player.talismans)}`,
   );
   lines.push(
-    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armorWear=${p.armorWear.toFixed(1)} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapon=T${p.weaponTier} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
+    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? `${p.armor.kind}:${p.armor.wear.toFixed(0)}` : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => `${w.kind}:${w.wear.toFixed(0)}`).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
   );
   if (state.pending) {
     const a = state.pending.assessment;

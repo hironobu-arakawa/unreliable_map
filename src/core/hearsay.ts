@@ -219,7 +219,7 @@ const ALLOWED_MISS: Record<ClaimKind, MissPattern[]> = {
 
 /** 箱の中身から「当たりか」を判定 */
 function chestIsGood(content: string | undefined): boolean {
-  return content === 'weapon' || content === 'potion' || content === 'food';
+  return content === 'weapon' || content === 'armor' || content === 'potion' || content === 'food';
 }
 
 /** 古地図・メモの生成結果。claims は memos のいずれかに属する（memoId） */

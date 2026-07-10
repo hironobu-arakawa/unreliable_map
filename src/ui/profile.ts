@@ -3,8 +3,9 @@
 // localStorage に触れるのはUI層のみ（coreは純粋 §4.1）。
 
 import { POTION_NAMES } from '../core/character';
+import { armorShortWord, weaponWord } from '../core/gear';
 import type { StartKit } from '../core/state';
-import type { PlayerState } from '../core/types';
+import type { PlayerState, WeaponGear } from '../core/types';
 
 /** 穴（性格）ごとの戦績。台帳に載る歴史的事実であり、内部確率ではない */
 export type WellRecord = {
@@ -17,7 +18,7 @@ export type WellRecord = {
 };
 
 export type Profile = {
-  version: 1;
+  version: 2;
   wells: Record<string, WellRecord>;
   /** 前回の生還で持ち出した品。死ぬと null（ギルドの標準の支度に戻る） */
   carryover: StartKit | null;
@@ -28,21 +29,44 @@ export type Profile = {
 const STORAGE_KEY = 'unreliable-map/profile/v1';
 
 function emptyProfile(): Profile {
-  return { version: 1, wells: {}, carryover: null };
+  return { version: 2, wells: {}, carryover: null };
+}
+
+/** v1（weaponTier/番号の薬）→ v2（装備アイテム）の移行 */
+function migrate(parsed: Record<string, unknown>): Profile {
+  const p = parsed as unknown as Profile & { version: number };
+  if (p.version === 2) return p;
+  if (p.version !== 1) return emptyProfile();
+  const carry = p.carryover as unknown as {
+    potions?: unknown;
+    weaponTier?: number;
+    weapons?: WeaponGear[];
+    armor?: unknown;
+  } | null;
+  if (carry) {
+    // 薬が本数（number）だった頃の持ち越しは傷薬として扱う
+    if (typeof carry.potions === 'number') {
+      carry.potions = carry.potions > 0 ? { salve: carry.potions } : {};
+    }
+    // weaponTier → 装備アイテム。鎧の記録はなかったので標準の革鎧に
+    const tier = carry.weaponTier ?? 1;
+    carry.weapons =
+      tier >= 2
+        ? [{ kind: 'sword', wear: 30 }]
+        : tier === 1
+          ? [{ kind: 'dagger', wear: 45 }]
+          : [];
+    carry.armor = { kind: 'leather', wear: 10 };
+    delete carry.weaponTier;
+  }
+  return { ...p, version: 2 } as Profile;
 }
 
 export function loadProfile(): Profile {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return emptyProfile();
-    const parsed = JSON.parse(raw) as Profile;
-    if (parsed.version !== 1) return emptyProfile();
-    // 旧形式の移行: 薬が本数（number）だった頃の持ち越しは傷薬として扱う
-    const carry = parsed.carryover as unknown as { potions?: unknown } | null;
-    if (carry && typeof carry.potions === 'number') {
-      carry.potions = carry.potions > 0 ? { salve: carry.potions } : {};
-    }
-    return parsed;
+    return migrate(JSON.parse(raw) as Record<string, unknown>);
   } catch {
     return emptyProfile();
   }
@@ -82,7 +106,8 @@ export function kitFromPlayer(p: PlayerState): StartKit {
     food: p.food,
     stones: p.stones,
     spareTorches: p.spareTorches,
-    weaponTier: p.weaponTier,
+    weapons: p.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w })),
+    armor: p.armor ? { ...p.armor } : null,
     talismans,
   };
 }
@@ -90,7 +115,8 @@ export function kitFromPlayer(p: PlayerState): StartKit {
 /** 台帳での持ち越し品の表記（帳場の声なので個数で書く。潜行中の言葉とは別） */
 export function describeKit(kit: StartKit): string {
   const parts: string[] = [];
-  if (kit.weaponTier >= 2) parts.push('剣');
+  for (const w of kit.weapons) parts.push(weaponWord(w));
+  if (kit.armor) parts.push(armorShortWord(kit.armor));
   for (const [kind, count] of Object.entries(kit.potions)) {
     if (count > 0) parts.push(`${POTION_NAMES[kind] ?? '薬'}×${count}`);
   }

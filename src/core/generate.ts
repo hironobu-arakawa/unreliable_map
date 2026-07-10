@@ -274,7 +274,8 @@ function generateFloor(
     const p = takeFreeCell(floor, cells, used);
     if (!p) break;
     const content = pickWeighted(rng, [
-      ['weapon', 0.14 * (0.5 + b.rewardWeaponBias)],
+      ['weapon', 0.12 * (0.5 + b.rewardWeaponBias)],
+      ['armor', 0.07 * (0.5 + b.rewardWeaponBias)],
       ['potion', 0.16],
       ['food', 0.16],
       ['talisman', 0.14],

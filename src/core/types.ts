@@ -50,6 +50,7 @@ export type FeatureKind =
 /** 宝箱の中身（生成時に確定。視界では絶対に判別できない） */
 export type ChestContent =
   | 'weapon'
+  | 'armor' // 鎖帷子などの防具
   | 'potion'
   | 'food'
   | 'talisman' // 模様の札
@@ -240,20 +241,30 @@ export type Claim = {
   verified: boolean;
 };
 
-// ---- プレイヤー状態 ----
+// ---- 装備（アイテムとしての武器・防具） ----
 
-/** 武器の段階。0=素手（折れた） 1=傷んだ短剣（初期装備） 2=剣 */
-export type WeaponTier = 0 | 1 | 2;
+export type WeaponKind = 'dagger' | 'sword';
+export type ArmorKind = 'leather' | 'chain';
+
+/** 得物。傷み（wear）は打ち合いで進み、100で折れる */
+export type WeaponGear = { kind: WeaponKind; wear: number };
+
+/** 鎧。傷みは被弾で進み、100で体をなさなくなる */
+export type ArmorGear = { kind: ArmorKind; wear: number };
+
+// ---- プレイヤー状態 ----
 
 export type PlayerState = {
   condition: number; // 体調（HP相当）0..100 内部値。UIは言葉のみ
   hunger: number; // 空腹 0..100（高いほど空腹）
-  armorWear: number; // 鎧の傷み 0..100
   torch: number; // 燃えている松明の残り 0..100
   spareTorches: number; // 予備の松明（尽きてからが本当の暗闇）
   poisonTurns: number; // 毒の残りターン
   hasteTurns: number; // 韋駄天の札の残りターン（体が軽く、敵の足が半分に見える）
-  weaponTier: WeaponTier;
+  /** 手持ちの得物。先頭が手にしているもの（最良が自動で先頭に来る）。空なら素手 */
+  weapons: WeaponGear[];
+  /** 着ている鎧。null なら身を守るものがない */
+  armor: ArmorGear | null;
   hasTreasure: boolean; // 最深部の宝
   potions: Record<string, number>; // 薬の種類→本数（キーは PotionKind）
   food: number;
