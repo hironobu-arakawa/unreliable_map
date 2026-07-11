@@ -67,7 +67,11 @@ const CATEGORY_LABELS: Record<MenuCategory, string> = {
   bag: '荷袋',
 };
 
-/** 行動のカテゴリ分け。null は1段目に直接出す */
+/**
+ * 行動のカテゴリ分け。null は1段目に直接出す。
+ * 「荷を検める」「持ち替え/着替え」は狙って探す行動なので畳まず1段目に置く
+ * （荷袋に畳むのは、増えがちな消耗品＝薬・糧食だけ）。
+ */
 function categoryOf(a: Action): MenuCategory | null {
   switch (a.type) {
     case 'throwStone':
@@ -76,9 +80,6 @@ function categoryOf(a: Action): MenuCategory | null {
       return 'throw';
     case 'drinkPotion':
     case 'eat':
-    case 'checkPack':
-    case 'equipWeapon':
-    case 'equipArmor':
       return 'bag';
     default:
       return null;
