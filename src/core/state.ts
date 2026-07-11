@@ -7,6 +7,7 @@ import type {
   DungeonInstance,
   Entity,
   Floor,
+  Item,
   Memo,
   PlayerState,
   PotionKind,
@@ -1205,6 +1206,17 @@ function dropArmorHere(state: GameState, a: ArmorGear): void {
   });
 }
 
+/** 消耗品を足元に落とす（持ちきれなかった戦利品。荷を減らせば拾い直せる。マップには * で残る） */
+function dropConsumableHere(state: GameState, fields: Partial<Item> & { kind: Item['kind']; name: string }): void {
+  state.dropSeq++;
+  currentFloor(state).items.push({
+    id: `drop-i${state.dropSeq}`,
+    pos: { ...state.pos },
+    taken: false,
+    ...fields,
+  });
+}
+
 /**
  * 得物を手に入れる。手にしている得物は替えない——持ち替えはプレイヤーの選択
  * （愛用の一本が勝手にベンチへ下がらない）。腰が塞がっていれば一番劣る予備を置いていく
@@ -1265,13 +1277,35 @@ function gainGem(state: GameState, events: EventLine[], lead: string): void {
   events.push(good(`${lead}${GEM_DATA[kind].name}だ。持ち帰れば、帳場が値をつけてくれる。`));
 }
 
-/** 骸から薬を得る（種類は懐を漁って初めて分かる）。袋が一杯なら null（置いていく） */
-function gainPotion(state: GameState): PotionKind | null {
+/**
+ * 骸・箱から薬を得る（種類は漁って初めて分かる）。袋が一杯なら足元に落とす（消えない）。
+ * @returns 拾えた薬の種類。持ちきれず床に落としたなら { dropped } 側にその種類が入る
+ */
+function gainPotion(state: GameState): { kind: PotionKind; gained: boolean } {
   const kind = pickWeighted(state.rng, POTION_DROP);
   const p = state.player;
-  if ((p.potions[kind] ?? 0) >= POTION_CAP) return null;
+  if ((p.potions[kind] ?? 0) >= POTION_CAP) {
+    dropConsumableHere(state, {
+      kind: 'potion',
+      name: `${POTION_NAMES[kind]}の瓶`,
+      potionKind: kind,
+    });
+    return { kind, gained: false };
+  }
   p.potions[kind] = (p.potions[kind] ?? 0) + 1;
-  return kind;
+  return { kind, gained: true };
+}
+
+/** 糧食を得る。担ぎきれなければ足元に落とす（消えない） */
+function gainFood(state: GameState, events: EventLine[], full: string, got: EventLine): void {
+  const p = state.player;
+  if (p.food >= FOOD_CAP) {
+    dropConsumableHere(state, { kind: 'food', name: '乾いた糧食' });
+    events.push(full);
+  } else {
+    p.food++;
+    events.push(got);
+  }
 }
 
 function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
@@ -1290,21 +1324,21 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
       );
       break;
     case 'potion': {
-      const kind = gainPotion(state);
+      const r = gainPotion(state);
       events.push(
-        kind
-          ? good(`骸の懐から${POTION_NAMES[kind]}の瓶が転がり出た。`)
-          : '骸の懐に薬瓶——だが同じ薬で袋はもう一杯だ。置いていく。',
+        r.gained
+          ? good(`骸の懐から${POTION_NAMES[r.kind]}の瓶が転がり出た。`)
+          : `骸の懐から${POTION_NAMES[r.kind]}の瓶——だが袋は一杯だ。足元に置いた。`,
       );
       break;
     }
     case 'food':
-      if (p.food >= FOOD_CAP) {
-        events.push('奴の糧袋はまだ食えそうだ。だが、これ以上は担げない。');
-      } else {
-        p.food++;
-        events.push(good('奴が漁っていた糧袋を回収した。まだ食える。'));
-      }
+      gainFood(
+        state,
+        events,
+        '奴の糧袋を引き出した——だが、これ以上は担げない。足元に置いた。',
+        good('奴が漁っていた糧袋を回収した。まだ食える。'),
+      );
       break;
     case 'gem':
       gainGem(state, events, '骸の懐から転がり出たのは');
@@ -1384,21 +1418,21 @@ function resolveSteal(state: GameState, events: EventLine[]): void {
         );
         break;
       case 'potion': {
-        const kind = gainPotion(state);
+        const r = gainPotion(state);
         events.push(
-          kind
-            ? good(`眠る${enemy.name}の懐から${POTION_NAMES[kind]}の瓶を抜き取った。`)
-            : '懐の瓶に指が触れた——だが同じ薬で袋は一杯だ。そっと戻す。',
+          r.gained
+            ? good(`眠る${enemy.name}の懐から${POTION_NAMES[r.kind]}の瓶を抜き取った。`)
+            : `${POTION_NAMES[r.kind]}の瓶を抜き取った——だが袋は一杯だ。足元に置いた。`,
         );
         break;
       }
       case 'food':
-        if (p.food >= FOOD_CAP) {
-          events.push('糧袋に手が届いた。だが、これ以上は担げない。');
-        } else {
-          p.food++;
-          events.push(good(`眠る${enemy.name}の脇から糧袋を引き抜いた。`));
-        }
+        gainFood(
+          state,
+          events,
+          '糧袋を引き抜いた——だが、これ以上は担げない。足元に置いた。',
+          good(`眠る${enemy.name}の脇から糧袋を引き抜いた。`),
+        );
         break;
       case 'gem':
         gainGem(state, events, '眠る相手の懐で光っていたのは');
@@ -2001,21 +2035,21 @@ function doOpen(state: GameState, events: EventLine[]): void {
       );
       break;
     case 'potion': {
-      const kind = gainPotion(state);
+      const r = gainPotion(state);
       events.push(
-        kind
-          ? good(`箱の中に${POTION_NAMES[kind]}の瓶が収まっていた。当たりだ。`)
-          : '箱の中に薬瓶——当たりだが、同じ薬で袋はもう一杯だ。置いていく。',
+        r.gained
+          ? good(`箱の中に${POTION_NAMES[r.kind]}の瓶が収まっていた。当たりだ。`)
+          : `箱の中に${POTION_NAMES[r.kind]}の瓶——当たりだが袋は一杯だ。足元に出しておく。`,
       );
       break;
     }
     case 'food':
-      if (p.food >= FOOD_CAP) {
-        events.push('箱の中に蝋引きの包み——糧食だ。だが、これ以上は担げない。');
-      } else {
-        p.food++;
-        events.push(good('箱の中に蝋引きの包み——糧食だ。当たりだ。'));
-      }
+      gainFood(
+        state,
+        events,
+        '箱の中に蝋引きの包み——糧食だ。だが担ぎきれず、足元に出しておく。',
+        good('箱の中に蝋引きの包み——糧食だ。当たりだ。'),
+      );
       break;
     case 'gem':
       gainGem(state, events, '箱の底で鈍く光っているのは');
