@@ -2,7 +2,14 @@
 // core の availableActions を読んでボタンを並べ、選択を core に渡すだけ。
 
 import { armorShortWord, weaponWord } from '../core/gear';
-import { availableActions, POTION_NAMES, type Action, type GameState } from '../core/state';
+import { itemAt } from '../core/generate';
+import {
+  availableActions,
+  currentFloor,
+  POTION_NAMES,
+  type Action,
+  type GameState,
+} from '../core/state';
 
 const ACTION_LABELS: Record<string, string> = {
   listen: '耳を澄ます',
@@ -40,8 +47,9 @@ export function actionLabel(a: Action, state?: GameState): string {
     return w ? `${weaponWord(w)}に持ち替える` : '持ち替える';
   }
   if (a.type === 'equipArmor') {
-    const s = state?.player.armorSpare;
-    return s ? `${armorShortWord(s)}に着替える` : '着替える';
+    if (!state) return '着替える';
+    const it = itemAt(currentFloor(state), state.pos);
+    return it?.armorGear ? `${armorShortWord(it.armorGear)}に着替える` : '着替える';
   }
   return ACTION_LABELS[a.type] ?? a.type;
 }

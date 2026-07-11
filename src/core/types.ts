@@ -280,10 +280,8 @@ export type PlayerState = {
    * 最大3本（手＋腰2）。空なら素手
    */
   weapons: WeaponGear[];
-  /** 着ている鎧。null なら身を守るものがない */
+  /** 着ている鎧。null なら身を守るものがない（予備は持てない——着替えは床の鎧の上で） */
   armor: ArmorGear | null;
-  /** 背に括った予備の鎧（1つまで）。着替えはプレイヤーの選択 */
-  armorSpare: ArmorGear | null;
   hasTreasure: boolean; // 最深部の宝
   /** 火油の瓶。種族を問わず大きく削るが、逃げ場のない場所で使えば自分も焼く */
   fireOil: number;

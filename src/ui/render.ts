@@ -8,7 +8,7 @@
 import { SOURCE_NAMES } from '../core/confidence';
 import { assessDanger } from '../core/danger';
 import { describeGems } from '../core/economy';
-import { armorShortWord, gearGauge } from '../core/gear';
+import { gearGauge } from '../core/gear';
 import { enemyAt, featureAt, itemAt } from '../core/generate';
 import {
   armorWord,
@@ -212,7 +212,6 @@ function renderStatusHtml(state: GameState): string {
       : '得物は素手',
   ];
   for (const w of p.weapons.slice(1)) carry.push(`替えの${escapeHtml(weaponWord(w))}${gauge(w.wear)}`);
-  if (p.armorSpare) carry.push(`背に${escapeHtml(armorShortWord(p.armorSpare))}${gauge(p.armorSpare.wear)}`);
   for (const [kind, count] of Object.entries(p.potions)) {
     if (count <= 0) continue;
     carry.push(n(POTION_NAMES[kind] ?? '薬', count, '（いくつか）'));

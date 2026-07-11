@@ -4,7 +4,7 @@
 
 import { WEAPON_CAP } from '../core/gear';
 import type { StartKit } from '../core/state';
-import { BASE_KIT } from '../core/state';
+import { BASE_KIT, FOOD_CAP, POTION_CAP, STONE_CAP } from '../core/state';
 
 export type ShopItem = {
   id: string;
@@ -45,6 +45,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     apply(kit) {
       kit.potions.salve = addCount(kit.potions.salve ?? 0, BASE_KIT.potions.salve ?? 0);
     },
+    canBuy(kit) {
+      return (kit.potions.salve ?? 0) < POTION_CAP;
+    },
   },
   {
     id: 'antidote',
@@ -53,6 +56,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     note: '毒の仕掛けの多い穴なら、安い保険だ。',
     apply(kit) {
       kit.potions.antidote = addCount(kit.potions.antidote ?? 0, 0);
+    },
+    canBuy(kit) {
+      return (kit.potions.antidote ?? 0) < POTION_CAP;
     },
   },
   {
@@ -63,6 +69,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     apply(kit) {
       kit.potions.tonic = addCount(kit.potions.tonic ?? 0, 0);
     },
+    canBuy(kit) {
+      return (kit.potions.tonic ?? 0) < POTION_CAP;
+    },
   },
   {
     id: 'elixir',
@@ -72,6 +81,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     apply(kit) {
       kit.potions.elixir = addCount(kit.potions.elixir ?? 0, 0);
     },
+    canBuy(kit) {
+      return (kit.potions.elixir ?? 0) < POTION_CAP;
+    },
   },
   {
     id: 'food',
@@ -80,6 +92,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     note: '飢えは静かに殺しに来る。',
     apply(kit) {
       kit.food = addCount(kit.food, BASE_KIT.food);
+    },
+    canBuy(kit) {
+      return kit.food < FOOD_CAP;
     },
   },
   {
@@ -98,6 +113,9 @@ export const SHOP_ITEMS: ShopItem[] = [
     note: '投げるにはちょうどいい。',
     apply(kit) {
       kit.stones = addCount(kit.stones, BASE_KIT.stones);
+    },
+    canBuy(kit) {
+      return kit.stones < STONE_CAP;
     },
   },
   {
@@ -168,7 +186,7 @@ export const SHOP_ITEMS: ShopItem[] = [
 /** 整備費: 持ち帰った装備の傷みの合計 × 0.1（切り上げ）。直せるのは地上だけ */
 export function repairFee(kit: StartKit | null): number {
   if (!kit) return 0;
-  const gear = [...kit.weapons, ...(kit.armor ? [kit.armor] : []), ...(kit.armorSpare ? [kit.armorSpare] : [])];
+  const gear = [...kit.weapons, ...(kit.armor ? [kit.armor] : [])];
   const totalWear = gear.reduce((s, g) => s + g.wear, 0);
   return Math.ceil(totalWear * 0.1);
 }
@@ -177,5 +195,4 @@ export function repairFee(kit: StartKit | null): number {
 export function repairAll(kit: StartKit): void {
   for (const w of kit.weapons) w.wear = 0;
   if (kit.armor) kit.armor.wear = 0;
-  if (kit.armorSpare) kit.armorSpare.wear = 0;
 }

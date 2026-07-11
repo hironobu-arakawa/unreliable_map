@@ -14,7 +14,7 @@ import { confidenceLabel } from '../src/core/confidence';
 import { assessDanger } from '../src/core/danger';
 import { gemTotal } from '../src/core/economy';
 import { armorGuard, weaponBetter } from '../src/core/gear';
-import { featureAt, isWalkable, tileAt } from '../src/core/generate';
+import { featureAt, isWalkable, itemAt, tileAt } from '../src/core/generate';
 import { hashSeed, mulberry32, type RNG } from '../src/core/rng';
 import {
   availableActions,
@@ -176,12 +176,22 @@ function run(seed: number, brain: Brain): RunResult {
         continue;
       }
       const label = state.pending!.assessment.label;
-      // 打ち合いの最中: 形勢を読み直し、死の気配に傾いたら離脱する（ターン制の判断）
+      // 打ち合いの最中: 形勢を読み直し、死の気配に傾いたら離脱。
+      // 深手なら（相手の追撃を覚悟の上で）薬を呷って立て直す
       if (state.pending!.rounds > 0) {
         if (label === '死の気配') {
           step(state, { type: 'retreat' });
         } else {
-          step(state, { type: 'engage' });
+          const heal =
+            p.condition <= 35
+              ? actions.find(
+                  (a): a is Extract<Action, { type: 'drinkPotion' }> =>
+                    a.type === 'drinkPotion' &&
+                    (a.kind === 'salve' || a.kind === 'elixir' || a.kind === 'murk'),
+                )
+              : undefined;
+          if (heal) step(state, heal);
+          else step(state, { type: 'engage' });
         }
         continue;
       }
@@ -233,16 +243,19 @@ function run(seed: number, brain: Brain): RunResult {
     }
     consecutiveRetreats = 0;
 
-    // ---- 装備管理: 良い得物・鎧を拾っていたら持ち替える（自動装備は廃止された） ----
+    // ---- 装備管理: 良い得物を拾っていたら持ち替え、足元の良い鎧には着替える ----
     {
       const betterIdx = p.weapons.findIndex((w, i) => i > 0 && weaponBetter(w, p.weapons[0]));
       if (betterIdx > 0) {
         step(state, { type: 'equipWeapon', index: betterIdx });
         continue;
       }
-      if (p.armorSpare && armorGuard(p.armorSpare) > armorGuard(p.armor)) {
-        step(state, { type: 'equipArmor' });
-        continue;
+      if (actions.some((a) => a.type === 'equipArmor')) {
+        const it = itemAt(floor, state.pos);
+        if (it?.kind === 'armor' && it.armorGear && armorGuard(it.armorGear) > armorGuard(p.armor)) {
+          step(state, { type: 'equipArmor' });
+          continue;
+        }
       }
     }
 

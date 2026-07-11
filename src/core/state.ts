@@ -27,9 +27,9 @@ import {
 import { describeGems, GEM_DATA, rollGemKind } from './economy';
 import {
   ARMOR_DATA,
-  armorGuard,
   armorShortWord,
   armorWord,
+  gearGauge,
   rollGearBonus,
   WEAPON_CAP,
   weaponBetter,
@@ -205,6 +205,11 @@ export type GameState = {
   respawnSeq: number;
   /** 床に置いていった装備のID連番 */
   dropSeq: number;
+  /**
+   * 直前の行動で立ち止まっていたか（休む・薬・耳を澄ます等）。
+   * 立ち止まっている隙に追いつかれると、敵の初撃つきで遭遇が始まる
+   */
+  stoodStill: boolean;
 };
 
 export type Action =
@@ -252,10 +257,13 @@ export type StartKit = {
   weapons: WeaponGear[];
   /** 着ている鎧。null ならギルドの標準（革鎧）が支給される */
   armor: ArmorGear | null;
-  /** 背に括った予備の鎧 */
-  armorSpare?: ArmorGear | null;
   talismans: Record<string, number>;
 };
+
+// ---- 携行上限（荷は無限には持てない） ----
+export const POTION_CAP = 3; // 薬は種類ごとに3本まで
+export const FOOD_CAP = 10;
+export const STONE_CAP = 20;
 
 /** ギルドが保証する最低限の支度。持ち越しがこれを下回っても詰まない（死の連鎖を断つ） */
 export const BASE_KIT: StartKit = {
@@ -266,7 +274,6 @@ export const BASE_KIT: StartKit = {
   fireOil: 0,
   weapons: [{ kind: 'dagger', wear: 45 }], // 傷んだ短剣。丸腰で潜る冒険者はいない
   armor: { kind: 'leather', wear: 10 },
-  armorSpare: null,
   talismans: {},
 };
 
@@ -287,18 +294,20 @@ function mergeKit(kit?: StartKit): StartKit {
   for (const [kind, count] of Object.entries(BASE_KIT.potions)) {
     potions[kind] = Math.max(count, potions[kind] ?? 0);
   }
+  for (const kind of Object.keys(potions)) {
+    potions[kind] = Math.min(POTION_CAP, potions[kind]);
+  }
   const weapons = kit.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w }));
   weapons.sort((a, b) => (weaponBetter(a, b) ? -1 : 1));
   weapons.splice(WEAPON_CAP); // 手＋腰2の上限
   return {
     potions,
-    food: Math.max(BASE_KIT.food, kit.food),
-    stones: Math.max(BASE_KIT.stones, kit.stones),
+    food: Math.min(FOOD_CAP, Math.max(BASE_KIT.food, kit.food)),
+    stones: Math.min(STONE_CAP, Math.max(BASE_KIT.stones, kit.stones)),
     spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
     fireOil: Math.max(BASE_KIT.fireOil, kit.fireOil ?? 0),
     weapons: weapons.length > 0 ? weapons : baseWeapons,
     armor: kit.armor ? { ...kit.armor } : baseArmor,
-    armorSpare: kit.armorSpare ? { ...kit.armorSpare } : null,
     talismans: { ...kit.talismans },
   };
 }
@@ -323,7 +332,6 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       hasteTurns: 0,
       weapons: k.weapons,
       armor: k.armor,
-      armorSpare: k.armorSpare ?? null,
       hasTreasure: false,
       fireOil: k.fireOil,
       gems: {},
@@ -353,6 +361,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     visitedFloors: new Set([0]),
     respawnSeq: 0,
     dropSeq: 0,
+    stoodStill: false,
   };
 
   state.knowledge[0].walked.add(key(state.pos));
@@ -678,6 +687,11 @@ export function availableActions(state: GameState): Action[] {
         if (count > 0) actions.push({ type: 'throwTalisman', pattern });
       }
     }
+    // 睨み合い・打ち合いの最中でも薬と糧食は使える——ただし、その隙に相手は動く
+    for (const [kind, count] of Object.entries(state.player.potions)) {
+      if (count > 0) actions.push({ type: 'drinkPotion', kind: kind as PotionKind });
+    }
+    if (state.player.food > 0) actions.push({ type: 'eat' });
     return actions;
   }
   const floor = currentFloor(state);
@@ -718,7 +732,8 @@ export function availableActions(state: GameState): Action[] {
   for (let i = 1; i < state.player.weapons.length; i++) {
     actions.push({ type: 'equipWeapon', index: i });
   }
-  if (state.player.armorSpare) actions.push({ type: 'equipArmor' });
+  const itemHere = itemAt(floor, state.pos);
+  if (itemHere?.kind === 'armor') actions.push({ type: 'equipArmor' });
   if (here?.kind === 'stairsDown') actions.push({ type: 'descend' });
   if (here?.kind === 'stairsUp' && floor.depth > 1) actions.push({ type: 'ascend' });
   if (here?.kind === 'stairsUp' && floor.depth === 1) actions.push({ type: 'escape' });
@@ -844,7 +859,22 @@ function processEnemies(
           if (state.phase === 'dead') return;
           continue;
         }
-        startEncounter(state, e, events, `${e.name}が追いついた——暗がりから躍りかかってくる！`);
+        // 立ち止まって何かしている隙に追いつかれた——敵の初撃つきで遭遇が始まる。
+        // 走っている間は従来どおり睨み合いから（同速の相手から逃げる余地は残す）
+        const profile = combatProfile(state.player, e, state.instance.character);
+        if (state.stoodStill && state.rng.next() < enemyHitChance(e.strength, profile) * 0.8) {
+          const dmg = rollEnemyDamage(e.strength, profile, state.rng) * 0.8;
+          state.player.condition -= dmg;
+          events.push(bad(`${e.name}に追いつかれた——振り向く間もなく一撃を受けた。`));
+          wearArmor(state, 2 + Math.floor(state.rng.next() * 3), events);
+          if (state.player.condition <= 0) {
+            die(state, events, `${e.name}に背中を裂かれた。逃げ足よりも速い相手だった。`);
+            return;
+          }
+          startEncounter(state, e, events, `${e.name}はもう目の前にいる。`);
+        } else {
+          startEncounter(state, e, events, `${e.name}が追いついた——暗がりから躍りかかってくる！`);
+        }
         return;
       }
       if (e.pos.x === e.lastSeen.x && e.pos.y === e.lastSeen.y) {
@@ -1200,7 +1230,19 @@ function gainWeapon(state: GameState, w: WeaponGear, events: EventLine[], lead: 
   }
 }
 
-/** 鎧を手に入れる。着替えはプレイヤーの選択。背の予備が塞がっていれば、劣る方を置いていく */
+/** 打ち捨てられた鎧の中身を決める（拾ってみるまで質は分からない） */
+function rollArmorGear(state: GameState): ArmorGear {
+  return {
+    kind: state.rng.next() < 0.65 ? 'leather' : 'chain',
+    wear: 20 + Math.floor(state.rng.next() * 45),
+    bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
+  };
+}
+
+/**
+ * 鎧を手に入れる。予備は背負えない——裸なら着る、着ていれば床に広げる
+ * （その場に「着替える」行動が出る。着替えるかはプレイヤーの選択）
+ */
 function gainArmor(state: GameState, a: ArmorGear, events: EventLine[], lead: string): void {
   const p = state.player;
   if (!p.armor) {
@@ -1208,22 +1250,8 @@ function gainArmor(state: GameState, a: ArmorGear, events: EventLine[], lead: st
     events.push(good(`${lead}${armorShortWord(a)}だ。身を守るものがなかった——ありがたく着る。`));
     return;
   }
-  if (!p.armorSpare) {
-    p.armorSpare = a;
-    events.push(good(`${lead}${armorShortWord(a)}だ。背に括った。`));
-    return;
-  }
-  if (armorGuard(a) > armorGuard(p.armorSpare)) {
-    const old = p.armorSpare;
-    p.armorSpare = a;
-    dropArmorHere(state, old);
-    events.push(
-      good(`${lead}${armorShortWord(a)}だ。見劣りする${armorShortWord(old)}を置き、こちらを背に括った。`),
-    );
-  } else {
-    dropArmorHere(state, a);
-    events.push(`${lead}${armorShortWord(a)}——だが背の予備の方が上等だ。置いていく。`);
-  }
+  dropArmorHere(state, a);
+  events.push(`${lead}${armorShortWord(a)}${gearGauge(a.wear)}だ。床に広げた——着替えるなら今だ。`);
 }
 
 /** 宝石を得る（深いほど良い石）。持ち帰ればギルドが銀貨に換える */
@@ -1237,11 +1265,11 @@ function gainGem(state: GameState, events: EventLine[], lead: string): void {
   events.push(good(`${lead}${GEM_DATA[kind].name}だ。持ち帰れば、帳場が値をつけてくれる。`));
 }
 
-/** 倒した敵の持ち物を必ず得る（挑む動機。何を持っているかは気配・記録が事前に匂わせる） */
-/** 骸から薬を得る（種類は懐を漁って初めて分かる） */
-function gainPotion(state: GameState): PotionKind {
+/** 骸から薬を得る（種類は懐を漁って初めて分かる）。袋が一杯なら null（置いていく） */
+function gainPotion(state: GameState): PotionKind | null {
   const kind = pickWeighted(state.rng, POTION_DROP);
   const p = state.player;
+  if ((p.potions[kind] ?? 0) >= POTION_CAP) return null;
   p.potions[kind] = (p.potions[kind] ?? 0) + 1;
   return kind;
 }
@@ -1263,12 +1291,20 @@ function lootCarry(state: GameState, enemy: Entity, events: EventLine[]): void {
       break;
     case 'potion': {
       const kind = gainPotion(state);
-      events.push(good(`骸の懐から${POTION_NAMES[kind]}の瓶が転がり出た。`));
+      events.push(
+        kind
+          ? good(`骸の懐から${POTION_NAMES[kind]}の瓶が転がり出た。`)
+          : '骸の懐に薬瓶——だが同じ薬で袋はもう一杯だ。置いていく。',
+      );
       break;
     }
     case 'food':
-      p.food++;
-      events.push(good('奴が漁っていた糧袋を回収した。まだ食える。'));
+      if (p.food >= FOOD_CAP) {
+        events.push('奴の糧袋はまだ食えそうだ。だが、これ以上は担げない。');
+      } else {
+        p.food++;
+        events.push(good('奴が漁っていた糧袋を回収した。まだ食える。'));
+      }
       break;
     case 'gem':
       gainGem(state, events, '骸の懐から転がり出たのは');
@@ -1349,12 +1385,20 @@ function resolveSteal(state: GameState, events: EventLine[]): void {
         break;
       case 'potion': {
         const kind = gainPotion(state);
-        events.push(good(`眠る${enemy.name}の懐から${POTION_NAMES[kind]}の瓶を抜き取った。`));
+        events.push(
+          kind
+            ? good(`眠る${enemy.name}の懐から${POTION_NAMES[kind]}の瓶を抜き取った。`)
+            : '懐の瓶に指が触れた——だが同じ薬で袋は一杯だ。そっと戻す。',
+        );
         break;
       }
       case 'food':
-        p.food++;
-        events.push(good(`眠る${enemy.name}の脇から糧袋を引き抜いた。`));
+        if (p.food >= FOOD_CAP) {
+          events.push('糧袋に手が届いた。だが、これ以上は担げない。');
+        } else {
+          p.food++;
+          events.push(good(`眠る${enemy.name}の脇から糧袋を引き抜いた。`));
+        }
         break;
       case 'gem':
         gainGem(state, events, '眠る相手の懐で光っていたのは');
@@ -1377,6 +1421,71 @@ function resolveSteal(state: GameState, events: EventLine[]): void {
   events.push(bad(`指先が触れた瞬間、${enemy.name}の目が開いた。`));
   advanceTurn(state, events, 0.8, 0.8);
   if (state.phase === 'dead') return;
+  const before = pending.assessment.label;
+  pending.assessment = assessDanger(
+    p,
+    enemy,
+    state.instance.character,
+    nearbyOthers(state, enemy.id),
+  );
+  events.push(
+    pending.assessment.label === before
+      ? `（危険度：${before}のまま）`
+      : `（危険度：${before} → ${pending.assessment.label}）`,
+  );
+}
+
+/**
+ * 遭遇中に薬を呷る・糧食を齧る。回復は打ち合いの最中でも選べる——
+ * ただし一手は一手。その隙に相手は踏み込んでくる（眠っていれば別だ）
+ */
+function resolveEncounterConsume(
+  state: GameState,
+  events: EventLine[],
+  action: { type: 'drinkPotion'; kind: PotionKind } | { type: 'eat' },
+): void {
+  const pending = state.pending!;
+  const floor = currentFloor(state);
+  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
+  const p = state.player;
+
+  if (action.type === 'eat') {
+    if (p.food <= 0) return;
+    p.food--;
+    p.hunger = Math.max(0, p.hunger - 40);
+    events.push('相手から目を離さず、乾いた糧食を口に押し込んだ。');
+  } else {
+    if ((p.potions[action.kind] ?? 0) <= 0) return;
+    applyPotionEffect(state, action.kind, events);
+  }
+
+  // 呷る隙に、相手は動く
+  if ((enemy.sleepTurns ?? 0) <= 0) {
+    const profile = combatProfile(p, enemy, state.instance.character);
+    if (state.rng.next() < enemyHitChance(enemy.strength, profile)) {
+      const dmg = rollEnemyDamage(enemy.strength, profile, state.rng);
+      p.condition -= dmg;
+      events.push(bad(`その隙に${enemy.name}が踏み込んできた。`));
+      events.push(woundWord(dmg));
+      wearArmor(state, 2 + Math.floor(state.rng.next() * 4), events);
+      if (p.condition <= 0) {
+        if (pending.rounds > 0) recordFightEnd(state, 'death');
+        die(state, events, `${enemy.name}を前にして、悠長すぎた。`);
+        return;
+      }
+    } else {
+      events.push(`${enemy.name}が踏み込んでくる——身を捻ってかわした。`);
+    }
+  }
+
+  advanceTurn(state, events, 0.8, 0.8);
+  if (state.phase === 'dead') {
+    if (pending.rounds > 0) recordFightEnd(state, 'death');
+    return;
+  }
+  processEnemies(state, events, enemy.id, true);
+  if ((state.phase as GamePhase) === 'dead') return;
+
   const before = pending.assessment.label;
   pending.assessment = assessDanger(
     p,
@@ -1620,30 +1729,47 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
   }
   const item = itemAt(floor, state.pos);
   if (item) {
-    item.taken = true;
     if (item.kind === 'food') {
-      p.food++;
-      events.push(good('乾いた糧食が落ちている。まだ食べられそうだ。'));
+      if (p.food >= FOOD_CAP) {
+        events.push('乾いた糧食が落ちている。だが、これ以上は担げない。');
+      } else {
+        item.taken = true;
+        p.food++;
+        events.push(good('乾いた糧食が落ちている。まだ食べられそうだ。'));
+      }
     } else if (item.kind === 'potion') {
       const kind = item.potionKind ?? 'murk';
-      p.potions[kind] = (p.potions[kind] ?? 0) + 1;
-      events.push(
-        good(
-          kind === 'murk'
-            ? '濁り薬の瓶を拾った。中身は振ってみても分からない。'
-            : `${POTION_NAMES[kind]}の瓶を拾った。銘はまだ読める。`,
-        ),
-      );
+      if ((p.potions[kind] ?? 0) >= POTION_CAP) {
+        events.push('薬瓶が落ちている。だが同じ薬で袋はもう一杯だ。');
+      } else {
+        item.taken = true;
+        p.potions[kind] = (p.potions[kind] ?? 0) + 1;
+        events.push(
+          good(
+            kind === 'murk'
+              ? '濁り薬の瓶を拾った。中身は振ってみても分からない。'
+              : `${POTION_NAMES[kind]}の瓶を拾った。銘はまだ読める。`,
+          ),
+        );
+      }
     } else if (item.kind === 'stone') {
-      p.stones++;
-      events.push(good('手頃な石を拾った。投げるにはちょうどいい。'));
+      if (p.stones >= STONE_CAP) {
+        events.push('手頃な石がある。だが袋は石でもう膨れ切っている。');
+      } else {
+        item.taken = true;
+        p.stones++;
+        events.push(good('手頃な石を拾った。投げるにはちょうどいい。'));
+      }
     } else if (item.kind === 'gem' && item.gemKind) {
+      item.taken = true;
       p.gems[item.gemKind] = (p.gems[item.gemKind] ?? 0) + 1;
       events.push(good(`土に半ば埋もれた${GEM_DATA[item.gemKind].name}を掘り出した。持ち帰れば銀貨になる。`));
     } else if (item.kind === 'talisman' && item.pattern) {
+      item.taken = true;
       p.talismans[item.pattern] = (p.talismans[item.pattern] ?? 0) + 1;
       events.push(good(`${item.pattern}の札が落ちている。模様の意味までは読めない。`));
     } else if (item.kind === 'weapon') {
+      item.taken = true;
       if (item.broken) {
         events.push('剣だ——だが手に取ると、刃は錆びて根元から折れた。使い物にならない。');
       } else {
@@ -1656,13 +1782,17 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
         gainWeapon(state, gear, events, item.weaponGear ? '置かれていたのは' : '床に落ちていたのは');
       }
     } else if (item.kind === 'armor') {
-      // 打ち捨てられた鎧: 拾ってみるまで質は分からない（自分で置いたものは実体ごと）
-      const gear = item.armorGear ?? {
-        kind: state.rng.next() < 0.65 ? ('leather' as const) : ('chain' as const),
-        wear: 20 + Math.floor(state.rng.next() * 45),
-        bonus: rollGearBonus(state.rng, gearDepthFrac(state)),
-      };
-      gainArmor(state, gear, events, item.armorGear ? '置かれていたのは' : '土埃を払うと、それは');
+      // 鎧は担いで歩けない。裸なら着る。着ていれば中身を検分し、「着替える」行動に委ねる
+      if (!p.armor) {
+        item.armorGear ??= rollArmorGear(state);
+        item.taken = true;
+        gainArmor(state, item.armorGear, events, '土埃を払うと、それは');
+      } else {
+        item.armorGear ??= rollArmorGear(state);
+        events.push(
+          `${armorShortWord(item.armorGear)}${gearGauge(item.armorGear.wear)}が打ち捨てられている。着替えるなら、ここでだ。`,
+        );
+      }
     }
   }
 }
@@ -1867,12 +1997,20 @@ function doOpen(state: GameState, events: EventLine[]): void {
       break;
     case 'potion': {
       const kind = gainPotion(state);
-      events.push(good(`箱の中に${POTION_NAMES[kind]}の瓶が収まっていた。当たりだ。`));
+      events.push(
+        kind
+          ? good(`箱の中に${POTION_NAMES[kind]}の瓶が収まっていた。当たりだ。`)
+          : '箱の中に薬瓶——当たりだが、同じ薬で袋はもう一杯だ。置いていく。',
+      );
       break;
     }
     case 'food':
-      p.food++;
-      events.push(good('箱の中に蝋引きの包み——糧食だ。当たりだ。'));
+      if (p.food >= FOOD_CAP) {
+        events.push('箱の中に蝋引きの包み——糧食だ。だが、これ以上は担げない。');
+      } else {
+        p.food++;
+        events.push(good('箱の中に蝋引きの包み——糧食だ。当たりだ。'));
+      }
       break;
     case 'gem':
       gainGem(state, events, '箱の底で鈍く光っているのは');
@@ -2011,15 +2149,19 @@ function doEquipWeapon(state: GameState, index: number, events: EventLine[]): vo
   advanceTurn(state, events, 0.8, 0.8);
 }
 
-/** 背の予備の鎧に着替える。着ていたものは背に括り直す */
+/** 足元に広げられた鎧に着替える。着ていたものはその場に残す */
 function doEquipArmor(state: GameState, events: EventLine[]): void {
-  const p = state.player;
-  if (!p.armorSpare) return;
-  const worn = p.armor;
-  p.armor = p.armorSpare;
-  p.armorSpare = worn;
+  const floor = currentFloor(state);
+  const item = itemAt(floor, state.pos);
+  if (!item || item.kind !== 'armor') return;
+  item.armorGear ??= rollArmorGear(state);
+  const gear = item.armorGear;
+  item.taken = true;
+  const old = state.player.armor;
+  state.player.armor = gear;
+  if (old) dropArmorHere(state, old);
   events.push(
-    `${armorShortWord(p.armor)}に着替えた。${worn ? `${armorShortWord(worn)}は背に括り直す。` : ''}`,
+    good(`${armorShortWord(gear)}に着替えた。${old ? `${armorShortWord(old)}はその場に残した。` : ''}`),
   );
   advanceTurn(state, events, 1.5, 1);
 }
@@ -2045,7 +2187,8 @@ function doRest(state: GameState, events: EventLine[]): void {
   advanceTurn(state, events, 3, 2);
 }
 
-function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]): void {
+/** 薬の効き目（薬効はここだけに置く。ターン進行・敵の反応は呼び出し側の責務） */
+function applyPotionEffect(state: GameState, kind: PotionKind, events: EventLine[]): void {
   const p = state.player;
   if ((p.potions[kind] ?? 0) <= 0) return;
   p.potions[kind]--;
@@ -2066,7 +2209,6 @@ function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]):
       p.poisonTurns = 2;
       events.push(bad('濁り薬を飲んだ。腹の奥が焼けるように痛む。悪いものだったらしい。'));
     }
-    advanceTurn(state, events, 0.5, 0.5);
     return;
   }
 
@@ -2119,6 +2261,11 @@ function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]):
       }
       break;
   }
+}
+
+function doDrinkPotion(state: GameState, kind: PotionKind, events: EventLine[]): void {
+  if ((state.player.potions[kind] ?? 0) <= 0) return;
+  applyPotionEffect(state, kind, events);
   advanceTurn(state, events, 0.5, 0.5);
 }
 
@@ -2222,6 +2369,8 @@ export function step(state: GameState, action: Action): EventLine[] {
     else if (action.type === 'throwStone') resolveThrow(state, events);
     else if (action.type === 'throwFireOil') resolveThrow(state, events, { fireOil: true });
     else if (action.type === 'throwTalisman') resolveThrow(state, events, { pattern: action.pattern });
+    else if (action.type === 'drinkPotion' || action.type === 'eat')
+      resolveEncounterConsume(state, events, action);
     state.events = events;
     return events;
   }
@@ -2281,7 +2430,10 @@ export function step(state: GameState, action: Action): EventLine[] {
     action.type !== 'descend' &&
     action.type !== 'ascend'
   ) {
+    // 立ち止まる行動だったか（移動以外）。立ち止まる隙に追いつかれると初撃を貰う
+    state.stoodStill = action.type !== 'move';
     processEnemies(state, events);
+    state.stoodStill = false;
     if (state.phase === 'explore') look(state, events);
   }
 

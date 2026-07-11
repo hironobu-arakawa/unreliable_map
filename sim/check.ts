@@ -13,6 +13,7 @@ import { applyHearsay } from '../src/core/hearsay';
 import { mulberry32, hashSeed } from '../src/core/rng';
 import {
   availableActions,
+  currentFloor,
   newGame,
   step,
   type Action,
@@ -189,13 +190,19 @@ function autoplay(seed: number): BotResult {
       const p = state.player;
       const here = actions;
       const has = (t: Action['type']) => here.find((a) => a.type === t);
-      // 自動装備が廃止されたので、良い得物・鎧を拾っていたら持ち替える
+      // 自動装備が廃止されたので、良い得物を拾っていたら持ち替え、足元の良い鎧には着替える
       const betterIdx = p.weapons.findIndex((w, i) => i > 0 && weaponBetter(w, p.weapons[0]));
       if (betterIdx > 0) {
         step(state, { type: 'equipWeapon', index: betterIdx });
         continue;
       }
-      if (p.armorSpare && armorGuard(p.armorSpare) > armorGuard(p.armor)) {
+      const armorHere = itemAt(currentFloor(state), state.pos);
+      if (
+        armorHere?.kind === 'armor' &&
+        armorHere.armorGear &&
+        armorGuard(armorHere.armorGear) > armorGuard(p.armor) &&
+        has('equipArmor')
+      ) {
         step(state, { type: 'equipArmor' });
         continue;
       }
