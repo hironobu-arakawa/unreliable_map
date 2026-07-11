@@ -1543,6 +1543,11 @@ function resolveEngage(state: GameState, events: EventLine[]): void {
         ? `あなたは眠りこける${enemy.name}に刃を立てた。`
         : `あなたは${enemy.name}に打ちかかった。`,
     );
+    // 斬り合いに気を取られれば、数え上げた荷の把握は頭から抜ける（また検め直すまで曖昧に戻る）
+    if (state.counted) {
+      state.counted = false;
+      events.push('斬り合いに気を取られ、荷の数はもう頭にない。');
+    }
   }
   pending.rounds++;
 
