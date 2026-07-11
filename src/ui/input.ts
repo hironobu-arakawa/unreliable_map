@@ -1,5 +1,9 @@
 // 行動選択 §11
 // core の availableActions を読んでボタンを並べ、選択を core に渡すだけ。
+// v0.10.1: 行動が増えたため2段階メニューにする。
+//   1段目 = 移動・挑む/退く・その場の行動。「投げる…」「荷袋…」はカテゴリボタン。
+//   2段目 = カテゴリの中身＋「戻る」。中身が1件だけなら畳まず1段目に直接出す。
+// メニューの開閉はUIの状態であり、coreのターンは一切進まない。
 
 import { armorShortWord, weaponWord } from '../core/gear';
 import { itemAt } from '../core/generate';
@@ -54,38 +58,120 @@ export function actionLabel(a: Action, state?: GameState): string {
   return ACTION_LABELS[a.type] ?? a.type;
 }
 
+// ---- 2段階メニュー ----
+
+export type MenuCategory = 'throw' | 'bag';
+
+const CATEGORY_LABELS: Record<MenuCategory, string> = {
+  throw: '投げる',
+  bag: '荷袋',
+};
+
+/** 行動のカテゴリ分け。null は1段目に直接出す */
+function categoryOf(a: Action): MenuCategory | null {
+  switch (a.type) {
+    case 'throwStone':
+    case 'throwFireOil':
+    case 'throwTalisman':
+      return 'throw';
+    case 'drinkPotion':
+    case 'eat':
+    case 'checkPack':
+    case 'equipWeapon':
+    case 'equipArmor':
+      return 'bag';
+    default:
+      return null;
+  }
+}
+
+export type MenuEntry =
+  | { kind: 'action'; action: Action }
+  | { kind: 'category'; category: MenuCategory; count: number }
+  | { kind: 'back' };
+
+/** いま画面に並べるべきボタンの一覧（ボタン描画とキーボードで共有する） */
+export function menuEntries(state: GameState, menu: MenuCategory | null): MenuEntry[] {
+  const actions = availableActions(state);
+  if (menu) {
+    const inside: MenuEntry[] = actions
+      .filter((a) => categoryOf(a) === menu)
+      .map((a) => ({ kind: 'action', action: a }));
+    inside.push({ kind: 'back' });
+    return inside;
+  }
+  const top: MenuEntry[] = [];
+  const counts = new Map<MenuCategory, number>();
+  for (const a of actions) {
+    const c = categoryOf(a);
+    if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+    else top.push({ kind: 'action', action: a });
+  }
+  for (const [category, count] of counts) {
+    if (count === 1) {
+      // 1件だけのカテゴリは畳まない（ワンクッションの意味がない）
+      const only = actions.find((a) => categoryOf(a) === category)!;
+      top.push({ kind: 'action', action: only });
+    } else {
+      top.push({ kind: 'category', category, count });
+    }
+  }
+  return top;
+}
+
+function entryLabel(e: MenuEntry, state: GameState): string {
+  if (e.kind === 'action') return actionLabel(e.action, state);
+  if (e.kind === 'category') return `${CATEGORY_LABELS[e.category]}…（${e.count}）`;
+  return '戻る';
+}
+
 /** 行動ボタンを描画する。番号キー・矢印キーでも選べる */
 export function renderActions(
   container: HTMLElement,
   state: GameState,
   onAction: (a: Action) => void,
+  menu: MenuCategory | null,
+  onMenu: (m: MenuCategory | null) => void,
 ): void {
   container.innerHTML = '';
-  const actions = availableActions(state);
-  actions.forEach((a, i) => {
+  const entries = menuEntries(state, menu);
+  entries.forEach((e, i) => {
     const btn = document.createElement('button');
     if (i < 9) {
       const kbd = document.createElement('kbd');
       kbd.textContent = `${i + 1}`;
       btn.appendChild(kbd);
     }
-    btn.appendChild(document.createTextNode(actionLabel(a, state)));
-    btn.addEventListener('click', () => onAction(a));
+    btn.appendChild(document.createTextNode(entryLabel(e, state)));
+    if (e.kind !== 'action') btn.classList.add('cat');
+    btn.addEventListener('click', () => {
+      if (e.kind === 'action') onAction(e.action);
+      else if (e.kind === 'category') onMenu(e.category);
+      else onMenu(null);
+    });
     container.appendChild(btn);
   });
 }
 
-/** キーボード入力（矢印=移動、数字=ボタン順）。台帳画面では state が無い */
+/** キーボード入力（矢印=移動、数字=ボタン順、Esc=メニューを閉じる）。台帳画面では state が無い */
 export function bindKeyboard(
   getState: () => GameState | null,
   onAction: (a: Action) => void,
+  getMenu: () => MenuCategory | null,
+  onMenu: (m: MenuCategory | null) => void,
 ): void {
   window.addEventListener('keydown', (ev) => {
     const state = getState();
     if (!state) return;
-    const actions = availableActions(state);
-    if (actions.length === 0) return;
+    const menu = getMenu();
 
+    if (ev.key === 'Escape' && menu) {
+      ev.preventDefault();
+      onMenu(null);
+      return;
+    }
+
+    // 矢印はいつでも移動（サブメニューを開いていても、動けば閉じる）
     const dirByKey: Record<string, 'north' | 'south' | 'west' | 'east'> = {
       ArrowUp: 'north',
       ArrowDown: 'south',
@@ -94,17 +180,22 @@ export function bindKeyboard(
     };
     const dir = dirByKey[ev.key];
     if (dir) {
-      const move = actions.find((a) => a.type === 'move' && a.dir === dir);
+      const move = availableActions(state).find((a) => a.type === 'move' && a.dir === dir);
       if (move) {
         ev.preventDefault();
         onAction(move);
       }
       return;
     }
+
+    const entries = menuEntries(state, menu);
     const n = Number(ev.key);
-    if (Number.isInteger(n) && n >= 1 && n <= actions.length) {
+    if (Number.isInteger(n) && n >= 1 && n <= entries.length) {
       ev.preventDefault();
-      onAction(actions[n - 1]);
+      const e = entries[n - 1];
+      if (e.kind === 'action') onAction(e.action);
+      else if (e.kind === 'category') onMenu(e.category);
+      else onMenu(null);
     }
   });
 }

@@ -8,7 +8,7 @@ import { newGame, step, type Action, type EventLine, type GameState } from './co
 import { baseKitClone, repairAll, repairFee, SHOP_ITEMS } from './ui/shop';
 import { dangerRateByLabel, hitRateByLabel } from './core/telemetry';
 import type { DungeonCharacter } from './core/types';
-import { bindKeyboard, renderActions } from './ui/input';
+import { bindKeyboard, renderActions, type MenuCategory } from './ui/input';
 import {
   describeKit,
   kitFromPlayer,
@@ -49,6 +49,8 @@ let currentCharacter: DungeonCharacter = SILENT_WELL;
 let currentBranchId = profile.lastBranch ?? BRANCHES[0].id;
 /** 出来事の履歴（新しいものが末尾）。直近を明るく、過去を薄く見せるためUI層が持つ */
 let eventHistory: EventLine[][] = [];
+/** 開いている行動サブメニュー（投げる/荷袋）。行動すれば閉じる */
+let actionMenu: MenuCategory | null = null;
 let runRecorded = false;
 /** ?seed= による再現潜行か（帳面に残さず、持ち越しも使わない） */
 let isReplay = false;
@@ -207,6 +209,7 @@ function showAtlas(): void {
 
 function startRun(character: DungeonCharacter, replaySeed?: number): void {
   currentCharacter = character;
+  actionMenu = null;
   // 再現潜行（?seed=）は標準支度・帳面に残さない——同じシードは常に同じ潜行（§4.2）
   isReplay = replaySeed !== undefined;
   state = newGame(
@@ -279,8 +282,14 @@ function endMetaLines(s: GameState): string[] {
   ];
 }
 
+function onMenu(m: MenuCategory | null): void {
+  actionMenu = m;
+  draw();
+}
+
 function onAction(a: Action): void {
   if (!state) return;
+  actionMenu = null;
   step(state, a);
   // 何も起きなかったターンは履歴に積まない（直近の出来事が空白に押し流されないように）
   if (state.events.length > 0) eventHistory.push(state.events);
@@ -317,7 +326,7 @@ function draw(): void {
     el.endPanel.hidden = true;
   }
 
-  renderActions(el.actions as HTMLElement, state, onAction);
+  renderActions(el.actions as HTMLElement, state, onAction, actionMenu, onMenu);
   if (view.end) {
     const again = document.createElement('button');
     again.textContent = '同じ穴にもう一度潜る（性格は同じ・迷宮は別）';
@@ -333,7 +342,7 @@ function draw(): void {
 
 // ---- 起動 ----
 
-bindKeyboard(() => state, onAction);
+bindKeyboard(() => state, onAction, () => actionMenu, onMenu);
 window.addEventListener('keydown', (ev) => {
   if (ev.key === '`') {
     debugMode = !debugMode;
