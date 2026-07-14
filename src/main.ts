@@ -90,7 +90,7 @@ function showAtlas(): void {
 
   el.carryNote.textContent = profile.carryover
     ? `次の潜行の支度：${describeKit(profile.carryover)}`
-    : '支度はギルドの標準のみ（傷んだ短剣・革鎧・松明・傷薬・糧食）。';
+    : '支度はギルドの標準のみ（短剣・革鎧・松明・傷薬・糧食）。';
 
   // 帳場: 預り金と店（宝石の換金で貯めた銀貨を、次の支度に変える）
   el.bank.textContent = `ギルドの預り金：銀貨${profile.coin}枚`;

@@ -254,7 +254,7 @@ export type StartKit = {
   spareTorches: number;
   /** 火油の瓶（帳場で買う。持ち越し可） */
   fireOil: number;
-  /** 手持ちの得物（先頭が手にしているもの）。空ならギルドの標準（傷んだ短剣）が支給される */
+  /** 手持ちの得物（先頭が手にしているもの）。空ならギルドの標準（短剣）が支給される */
   weapons: WeaponGear[];
   /** 着ている鎧。null ならギルドの標準（革鎧）が支給される */
   armor: ArmorGear | null;
@@ -273,7 +273,7 @@ export const BASE_KIT: StartKit = {
   stones: 2,
   spareTorches: 2, // 冒険者は準備してくる。暗闇は計画の失敗として訪れる
   fireOil: 0,
-  weapons: [{ kind: 'dagger', wear: 45 }], // 傷んだ短剣。丸腰で潜る冒険者はいない
+  weapons: [{ kind: 'dagger', wear: 25 }], // 短剣。丸腰で潜る冒険者はいない
   armor: { kind: 'leather', wear: 10 },
   talismans: {},
 };
@@ -330,6 +330,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
       torch: 100,
       spareTorches: k.spareTorches,
       poisonTurns: 0,
+      numbTurns: 0,
       hasteTurns: 0,
       weapons: k.weapons,
       armor: k.armor,
@@ -448,7 +449,7 @@ function correspondenceText(c: Claim): string {
             ? '箱の中身は本物だった'
             : '触るなという警告は正しかった',
       enemy: '何かが棲んでいるのは本当だった',
-      trap: '毒の仕掛けは実在した',
+      trap: '仕掛けは実在した',
       treasure: '宝の在り処は正しかった',
       passage: '道は今も通じていた',
       weapon: '得物は残されていた',
@@ -573,6 +574,7 @@ export function currentMaterials(state: GameState): string[] {
   out.push(torchWord(p.torch, p.spareTorches, state.counted));
   out.push(`得物は${weaponWord(p.weapons[0])}`);
   if (p.poisonTurns > 0) out.push('毒が回っている');
+  if (p.numbTurns > 0) out.push('体が痺れている');
   const depth = currentFloor(state).depth;
   for (const c of state.claims) {
     if ((c.floorDepth === depth || c.floorDepth === 0) && !c.verified) {
@@ -603,6 +605,11 @@ function advanceTurn(state: GameState, events: EventLine[], hungerCost: number, 
     p.poisonTurns--;
     p.condition -= 3;
     events.push(bad('毒が体を蝕んでいる。'));
+  }
+  if (p.numbTurns > 0) {
+    p.numbTurns--;
+    if (p.numbTurns === 0) events.push('ようやく痺れが抜け、手足の感覚が戻ってきた。');
+    else events.push(bad('体が痺れて、思うように動かない。'));
   }
   if (p.hasteTurns > 0) {
     p.hasteTurns--;
@@ -675,6 +682,11 @@ export function availableActions(state: GameState): Action[] {
   if (state.phase === 'dead' || state.phase === 'escaped') return [];
   if (state.phase === 'encounter') {
     const actions: Action[] = [{ type: 'engage' }, { type: 'retreat' }];
+    // 階段の上で遭遇しているなら、背を向けて階を移る強行離脱ができる（確実に縁は切れるが、離れ際は無防備）
+    const stair = featureAt(currentFloor(state), state.pos);
+    if (stair?.kind === 'stairsDown') actions.push({ type: 'descend' });
+    if (stair?.kind === 'stairsUp' && currentFloor(state).depth > 1) actions.push({ type: 'ascend' });
+    if (stair?.kind === 'stairsUp' && currentFloor(state).depth === 1) actions.push({ type: 'escape' });
     const foe = currentFloor(state).entities.find((e) => e.id === state.pending!.enemyId);
     // 眠っている相手の懐は探れる（しくじれば目が覚める＝工夫の勝ち筋）
     if (foe && (foe.sleepTurns ?? 0) > 0 && foe.carry !== 'none') {
@@ -1711,6 +1723,48 @@ function resolveRetreat(state: GameState, events: EventLine[]): void {
   if (state.phase === 'explore') look(state, events);
 }
 
+/**
+ * 階段からの強行離脱。階段の上で遭遇しているなら、背を向けて階を移れば確実に縁が切れる。
+ * ただし背を向けて駆け上がる（降りる）瞬間は、後ずさる退却よりも無防備だ。
+ */
+function resolveStairFlee(
+  state: GameState,
+  events: EventLine[],
+  kind: 'descend' | 'ascend' | 'escape',
+): void {
+  const pending = state.pending!;
+  const floor = currentFloor(state);
+  const enemy = floor.entities.find((e) => e.id === pending.enemyId)!;
+  const risk = pending.assessment.internalRisk;
+
+  // 韋駄天の札・眠る相手からの離脱は無傷
+  const cleanBreak = state.player.hasteTurns > 0 || (enemy.sleepTurns ?? 0) > 0;
+  const hit = !cleanBreak && state.rng.next() < 0.15 + risk * 0.35;
+  if (hit) {
+    const dmg = 6 + Math.floor(state.rng.next() * 10);
+    state.player.condition -= dmg;
+    events.push(bad(`${enemy.name}に背を向け、階段へ飛び込む——離れ際、背中に鋭い痛みが走った。`));
+  } else {
+    events.push(`${enemy.name}に背を向け、階段へ飛び込んだ。`);
+  }
+  recordDanger(state.telemetry, {
+    turn: state.turn,
+    danger_label: pending.assessment.label,
+    internal_risk: risk,
+    engaged: false,
+    outcome: hit ? 'retreatHit' : 'avoided',
+  });
+  state.pending = null;
+  state.phase = 'explore';
+  if (state.player.condition <= 0) {
+    die(state, events, '階段に手をかけたまま、力尽きた。あと一段が遠かった。');
+    return;
+  }
+  if (kind === 'descend') doDescend(state, events);
+  else if (kind === 'ascend') doAscend(state, events);
+  else escape(state, events);
+}
+
 // ---- 移動とタイルイベント ----
 
 function stepOnTile(state: GameState, events: EventLine[]): void {
@@ -1722,9 +1776,23 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
       case 'trap':
         if (!f.triggered) {
           f.triggered = true;
-          p.condition -= 12;
-          p.poisonTurns = 4;
-          events.push(bad('足元で乾いた音がした——毒の棘だ。痺れが脚を這い上がってくる。'));
+          switch (f.trapKind ?? 'poison') {
+            case 'poison':
+              p.condition -= 12;
+              p.poisonTurns = 4;
+              events.push(bad('足元で乾いた音がした——毒の棘だ。傷は浅いが、熱が血を巡り始める。'));
+              break;
+            case 'blade':
+              p.condition -= 18 + Math.floor(state.rng.next() * 10);
+              events.push(bad('石畳が沈んだ——壁の隙間から刃が薙いだ。深い傷を受けた。'));
+              wearArmor(state, 4 + Math.floor(state.rng.next() * 4), events);
+              break;
+            case 'numb':
+              p.condition -= 6;
+              p.numbTurns = 6;
+              events.push(bad('足元から青白い霧が噴き出した。手足から力が抜けていく——体が痺れた。'));
+              break;
+          }
         } else {
           events.push('床に朽ちた仕掛けの残骸がある。もう動かない。');
         }
@@ -1871,7 +1939,7 @@ function doMove(state: GameState, dir: Dir, events: EventLine[]): void {
   if (state.phase !== 'explore') return;
   stepOnTile(state, events);
   if (state.player.condition <= 0) {
-    die(state, events, '毒の仕掛けが最後の一押しになった。');
+    die(state, events, '床の仕掛けが最後の一押しになった。');
     return;
   }
   look(state, events);
@@ -2065,11 +2133,27 @@ function doOpen(state: GameState, events: EventLine[]): void {
       p.hasTreasure = true;
       events.push(good('布に包まれた重み——宝だ。この箱だったのか。あとは、生きて帰るだけだ。'));
       break;
-    case 'needle':
-      p.condition -= 14;
-      p.poisonTurns = 3;
-      events.push(bad('蓋を開けた瞬間、留め金の奥で針が跳ねた。指先から痺れが這い上がる。'));
+    case 'needle': {
+      // 仕掛けの種類は開けるまで分からない（毒針・バネ刃・痺れの霧）。
+      // 仕掛けがあるのは守る価値があった証——奥には必ず金目のものが残っている
+      const sub = state.rng.next();
+      if (sub < 0.4) {
+        p.condition -= 14;
+        p.poisonTurns = 3;
+        events.push(bad('蓋を開けた瞬間、留め金の奥で針が跳ねた。指先から毒の熱が這い上がる。'));
+      } else if (sub < 0.7) {
+        p.condition -= 16 + Math.floor(state.rng.next() * 8);
+        events.push(bad('蓋の裏でバネ仕掛けの刃が跳ねた。腕を深く裂かれた。'));
+      } else {
+        p.condition -= 6;
+        p.numbTurns = 5;
+        events.push(bad('箱の中から白い霧が噴き出した。腕から力が抜けていく——体が痺れた。'));
+      }
+      if (p.condition > 0) {
+        gainGem(state, events, '仕掛けの奥に、守られるように収まっていたのは');
+      }
       break;
+    }
     case 'mimic': {
       const mimic = floor.entities.find(
         (e) => e.dormant && e.alive && e.pos.x === state.pos.x && e.pos.y === state.pos.y,
@@ -2090,7 +2174,7 @@ function doOpen(state: GameState, events: EventLine[]): void {
   }
   verifyDecisionClaimsAt(state, state.pos, events);
   if (p.condition <= 0) {
-    die(state, events, '箱に仕込まれた針が、最後の一押しになった。');
+    die(state, events, '箱に仕込まれた仕掛けが、最後の一押しになった。');
     return;
   }
   advanceTurn(state, events, 0.5, 0.5);
@@ -2408,6 +2492,8 @@ export function step(state: GameState, action: Action): EventLine[] {
     else if (action.type === 'throwStone') resolveThrow(state, events);
     else if (action.type === 'throwFireOil') resolveThrow(state, events, { fireOil: true });
     else if (action.type === 'throwTalisman') resolveThrow(state, events, { pattern: action.pattern });
+    else if (action.type === 'descend' || action.type === 'ascend' || action.type === 'escape')
+      resolveStairFlee(state, events, action.type);
     else if (action.type === 'drinkPotion' || action.type === 'eat')
       resolveEncounterConsume(state, events, action);
     state.events = events;
@@ -2472,6 +2558,10 @@ export function step(state: GameState, action: Action): EventLine[] {
     // 立ち止まる行動だったか（移動以外）。立ち止まる隙に追いつかれると初撃を貰う
     state.stoodStill = action.type !== 'move';
     processEnemies(state, events);
+    // 痺れた足は半分の速さしか出ない——周りのものは二歩ぶん近づいてくる
+    if (state.phase === 'explore' && state.player.numbTurns > 0) {
+      processEnemies(state, events);
+    }
     state.stoodStill = false;
     if (state.phase === 'explore') look(state, events);
   }

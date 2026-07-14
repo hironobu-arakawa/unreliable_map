@@ -320,7 +320,7 @@ function generateFloor(
     }
   }
 
-  // 宝箱: 開けるまで中身は分からない（当たり/毒針/ミミック/空。§「検証行為そのものがリスク」）
+  // 宝箱: 開けるまで中身は分からない（当たり/仕掛け/ミミック/空。§「検証行為そのものがリスク」）
   const chestCount = rng.next() < 0.75 ? (rng.next() < 0.25 ? 2 : 1) : 0;
   for (let i = 0; i < chestCount; i++) {
     const p = takeFreeCell(floor, cells, used);
@@ -331,7 +331,7 @@ function generateFloor(
       ['potion', 0.15],
       ['food', 0.15],
       ['talisman', 0.13],
-      ['gem', 0.04 + (1 - upperness) * 0.08], // 深い箱ほど石が眠る
+      ['gem', 0.1 + (1 - upperness) * 0.08], // 換金できる石は箱の定番。深い箱ほど良い石が眠る
       ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
       ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
       ['empty', 0.1],
@@ -350,20 +350,25 @@ function generateFloor(
         chasing: false,
         lastSeen: null,
         lostTurns: 0,
-        carry: pickWeighted(rng, [
-          ['potion', 0.5],
-          ['food', 0.5],
-        ] as const),
+        carry: 'gem', // 箱を騙るものは、呑んだ光り物を腹に残している（挑んだ賭けは金で報われる）
         dormant: true,
       });
     }
   }
 
-  // 毒罠: 数は控えめに（踏むかどうかは選択ではなく運。判断の主役は箱と水に移した）
+  // 罠: 数は控えめに（踏むかどうかは選択ではなく運。判断の主役は箱と水に移した）。
+  // 種類は毒・刃・痺れ。「上層の毒」の性格は毒罠の割合に現れる
   const trapCount = Math.round(b.upperTrapRate * (0.3 + upperness * 1.0) + rng.next() * 0.4);
   for (let i = 0; i < trapCount; i++) {
     const p = takeFreeCell(floor, cells, used);
-    if (p) floor.features.push({ id: `f${depth}-trap${i}`, kind: 'trap', pos: p });
+    if (p) {
+      const trapKind = pickWeighted(rng, [
+        ['poison', 0.35 + b.upperTrapRate * 0.25],
+        ['blade', 0.3],
+        ['numb', 0.25],
+      ] as const);
+      floor.features.push({ id: `f${depth}-trap${i}`, kind: 'trap', pos: p, trapKind });
+    }
   }
 
   // 敵: 密度は低め・一体ごとの危険度は高め（性格）。金属系は重く遅い＝走れば振り切れる

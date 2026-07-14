@@ -44,6 +44,12 @@ export function actionLabel(a: Action, state?: GameState): string {
   if (a.type === 'move') return DIR_LABELS[a.dir];
   if (a.type === 'throwTalisman') return `${a.pattern}の札を投げる`;
   if (a.type === 'drinkPotion') return `${POTION_NAMES[a.kind] ?? '薬'}を飲む`;
+  // 遭遇中の階段は強行離脱（確実に縁は切れるが、背を向ける瞬間は無防備）
+  if (state?.phase === 'encounter') {
+    if (a.type === 'descend') return '階段を降りて逃げる';
+    if (a.type === 'ascend') return '階段を上って逃げる';
+    if (a.type === 'escape') return '地上へ逃げ込む';
+  }
   // 打ち合いが始まったら「挑む」ではなく「打ち込む」（ターン制戦闘の一手）
   if (a.type === 'engage' && state?.pending && state.pending.rounds > 0) return '打ち込む';
   if (a.type === 'equipWeapon') {

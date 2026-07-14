@@ -200,17 +200,19 @@ function renderStatusHtml(state: GameState): string {
   // 傷みの目盛り（見れば分かる事実。折れかけ・ぼろぼろは赤）
   const gauge = (wear: number): string =>
     `<span class="gauge${wear >= 70 ? ' worn' : ''}">${gearGauge(wear)}</span>`;
+  // 装備の段: 手にしている得物と着ている鎧（どちらも目盛り付き）。替えの得物は持ち物の段に置く
+  const weaponPart = p.weapons[0]
+    ? `得物は${escapeHtml(weaponWord(p.weapons[0]))}${gauge(p.weapons[0].wear)}`
+    : '得物は素手';
   const lines: string[] = [
     `<div class="line">${conditionWord(p.condition)}。${hungerWord(p.hunger)}。</div>`,
-    `<div class="line">${escapeHtml(armorWord(p.armor))}${p.armor ? gauge(p.armor.wear) : ''}。${torchWord(p.torch, p.spareTorches, state.counted)}。</div>`,
+    `<div class="line">${weaponPart}。${escapeHtml(armorWord(p.armor))}${p.armor ? gauge(p.armor.wear) : ''}。</div>`,
+    `<div class="line">${torchWord(p.torch, p.spareTorches, state.counted)}。</div>`,
   ];
   if (p.poisonTurns > 0) lines.push('<div class="line bad">毒が回っている。</div>');
+  if (p.numbTurns > 0) lines.push('<div class="line bad">体が痺れている。</div>');
   if (p.hasteTurns > 0) lines.push('<div class="line good">体が羽のように軽い。</div>');
-  const carry: string[] = [
-    p.weapons[0]
-      ? `得物は${escapeHtml(weaponWord(p.weapons[0]))}${gauge(p.weapons[0].wear)}`
-      : '得物は素手',
-  ];
+  const carry: string[] = [];
   for (const w of p.weapons.slice(1)) carry.push(`替えの${escapeHtml(weaponWord(w))}${gauge(w.wear)}`);
   for (const [kind, count] of Object.entries(p.potions)) {
     if (count <= 0) continue;
@@ -236,7 +238,7 @@ function renderStatusHtml(state: GameState): string {
   carry.push(...describeGems(p.gems).map(escapeHtml));
   if (p.hasTreasure) carry.push('迷宮の底の宝');
   // 装備エントリはゲージのspanを含むため、ここでは再エスケープしない（各エントリで済ませてある）
-  lines.push(`<div class="line">持ち物：${carry.join('、')}</div>`);
+  lines.push(`<div class="line">持ち物：${carry.length > 0 ? carry.join('、') : '荷袋は空だ'}</div>`);
   return lines.join('');
 }
 
@@ -268,7 +270,7 @@ function renderDebug(state: GameState): string {
   const gearTag = (kind: string, wear: number, bonus?: number) =>
     `${kind}${bonus ? (bonus > 0 ? `+${bonus}` : bonus) : ''}:${wear.toFixed(0)}`;
   lines.push(
-    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? gearTag(p.armor.kind, p.armor.wear, p.armor.bonus) : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => gearTag(w.kind, w.wear, w.bonus)).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
+    `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? gearTag(p.armor.kind, p.armor.wear, p.armor.bonus) : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} numb=${p.numbTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => gearTag(w.kind, w.wear, w.bonus)).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
   );
   if (state.pending) {
     const a = state.pending.assessment;
@@ -289,6 +291,9 @@ function renderDebug(state: GameState): string {
     }
     if (f.kind === 'spring') {
       lines.push(`泉 ${f.id} (${f.pos.x},${f.pos.y}) ${f.badWater ? '悪い水' : '良い水'}`);
+    }
+    if (f.kind === 'trap') {
+      lines.push(`罠 ${f.id} (${f.pos.x},${f.pos.y}) 種=${f.trapKind ?? 'poison'}${f.triggered ? ' 発動済' : ''}`);
     }
   }
   for (const c of [...state.claims, ...state.senses]) {

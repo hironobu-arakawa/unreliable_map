@@ -73,6 +73,12 @@ export function combatProfile(
     hitMod -= 0.25;
     factors.push('体が羽のように軽い');
   }
+  // 痺れ: 刃は鈍り、かわす足も遅れる（罠・箱の霧の帰結。危険度ラベルにも正直に効く）
+  if (player.numbTurns > 0) {
+    power *= 0.85;
+    hitMod += 0.15;
+    factors.push('体が痺れている');
+  }
   // 光と種族: 獣は火を恐れ、影は闇の中で濃くなる（金属は光に無頓着）
   if (enemy.kind === 'beast') {
     if (lit) {

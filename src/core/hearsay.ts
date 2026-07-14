@@ -80,7 +80,7 @@ function claimText(
       deathNote: `「${phrase}に何かいる。音が、止まらない」……最後の記述だ。`,
     },
     trap: {
-      oldMap: `${phrase}の床に毒の印が付されている。`,
+      oldMap: `${phrase}の床に仕掛けの印が付されている。`,
       survivorNote: `「${phrase}の床は踏むな」と念押しされている。`,
       deathNote: `「足が、痺れて」……${phrase}を指す血の跡がある。`,
     },

@@ -42,10 +42,13 @@ export type FeatureKind =
   | 'stairsDown' // 下り階段
   | 'spring' // 泉（見た目では飲めるかどうか分からない）
   | 'driedSpring' // 枯れた泉（外れ方「条件が違う」の受け皿）
-  | 'trap' // 毒罠（踏むまで見えない）
+  | 'trap' // 罠（踏むまで見えない。種類は trapKind）
   | 'collapse' // 崩落（元は通路だった痕跡）
   | 'chest' // 宝箱（開けるまで中身は分からない。検証行為そのものがリスク）
   | 'treasure'; // 最深部の宝
+
+/** 罠の種類。毒（じわじわ削る）・刃（一撃が重い）・痺れ（数ターン体が鈍る） */
+export type TrapKind = 'poison' | 'blade' | 'numb';
 
 /** 宝箱の中身（生成時に確定。視界では絶対に判別できない） */
 export type ChestContent =
@@ -68,6 +71,8 @@ export type Feature = {
   crumbling?: boolean;
   /** 罠が発動済みか */
   triggered?: boolean;
+  /** 罠の種類（kind === 'trap' のとき） */
+  trapKind?: TrapKind;
   /** 宝が回収済みか */
   taken?: boolean;
   /** 泉を飲んだ回数（飲むほど細り、やがて涸れる） */
@@ -274,6 +279,7 @@ export type PlayerState = {
   torch: number; // 燃えている松明の残り 0..100
   spareTorches: number; // 予備の松明（尽きてからが本当の暗闇）
   poisonTurns: number; // 毒の残りターン
+  numbTurns: number; // 痺れの残りターン（足が鈍り、周りは二歩ぶん近づく。反撃も貰いやすい）
   hasteTurns: number; // 韋駄天の札の残りターン（体が軽く、敵の足が半分に見える）
   /**
    * 手持ちの得物。先頭が「手にしている」もの（持ち替えはプレイヤーの選択。自動では替えない）。
