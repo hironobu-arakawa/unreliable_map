@@ -4,7 +4,7 @@
 
 import { WEAPON_CAP } from '../core/gear';
 import type { StartKit } from '../core/state';
-import { BASE_KIT, FOOD_CAP, POTION_CAP, STONE_CAP } from '../core/state';
+import { BASE_KIT, FOOD_CAP, POTION_TOTAL_CAP, potionTotal, STONE_CAP } from '../core/state';
 
 export type ShopItem = {
   id: string;
@@ -36,6 +36,13 @@ function addCount(current: number, base: number): number {
   return Math.max(current, base) + 1;
 }
 
+/** 薬が買えるか: 合計の上限（内訳は自由）。標準までの引き上げぶんも数えて判定する */
+function canBuyPotion(kit: StartKit, kind: string, base = 0): boolean {
+  const cur = kit.potions[kind] ?? 0;
+  const delta = addCount(cur, base) - cur;
+  return potionTotal(kit.potions) + delta <= POTION_TOTAL_CAP;
+}
+
 export const SHOP_ITEMS: ShopItem[] = [
   {
     id: 'salve',
@@ -46,7 +53,7 @@ export const SHOP_ITEMS: ShopItem[] = [
       kit.potions.salve = addCount(kit.potions.salve ?? 0, BASE_KIT.potions.salve ?? 0);
     },
     canBuy(kit) {
-      return (kit.potions.salve ?? 0) < POTION_CAP;
+      return canBuyPotion(kit, 'salve', BASE_KIT.potions.salve ?? 0);
     },
   },
   {
@@ -58,7 +65,7 @@ export const SHOP_ITEMS: ShopItem[] = [
       kit.potions.antidote = addCount(kit.potions.antidote ?? 0, 0);
     },
     canBuy(kit) {
-      return (kit.potions.antidote ?? 0) < POTION_CAP;
+      return canBuyPotion(kit, 'antidote');
     },
   },
   {
@@ -70,7 +77,7 @@ export const SHOP_ITEMS: ShopItem[] = [
       kit.potions.tonic = addCount(kit.potions.tonic ?? 0, 0);
     },
     canBuy(kit) {
-      return (kit.potions.tonic ?? 0) < POTION_CAP;
+      return canBuyPotion(kit, 'tonic');
     },
   },
   {
@@ -82,7 +89,7 @@ export const SHOP_ITEMS: ShopItem[] = [
       kit.potions.elixir = addCount(kit.potions.elixir ?? 0, 0);
     },
     canBuy(kit) {
-      return (kit.potions.elixir ?? 0) < POTION_CAP;
+      return canBuyPotion(kit, 'elixir');
     },
   },
   {

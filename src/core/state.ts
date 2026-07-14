@@ -262,9 +262,14 @@ export type StartKit = {
 };
 
 // ---- 携行上限（荷は無限には持てない） ----
-export const POTION_CAP = 3; // 薬は種類ごとに3本まで
+export const POTION_TOTAL_CAP = 12; // 薬は合計12本まで（内訳は自由。解毒を積むか回復を積むかは支度の選択）
 export const FOOD_CAP = 10;
 export const STONE_CAP = 20;
+
+/** 薬の合計本数（携行上限の判定用） */
+export function potionTotal(potions: Record<string, number>): number {
+  return Object.values(potions).reduce((s, n) => s + n, 0);
+}
 
 /** ギルドが保証する最低限の支度。持ち越しがこれを下回っても詰まない（死の連鎖を断つ） */
 export const BASE_KIT: StartKit = {
@@ -295,8 +300,11 @@ function mergeKit(kit?: StartKit): StartKit {
   for (const [kind, count] of Object.entries(BASE_KIT.potions)) {
     potions[kind] = Math.max(count, potions[kind] ?? 0);
   }
-  for (const kind of Object.keys(potions)) {
-    potions[kind] = Math.min(POTION_CAP, potions[kind]);
+  // 合計の上限に収める。超えたぶんは安い薬から置いていく（霊薬は最後まで残す）
+  for (const kind of ['murk', 'tonic', 'salve', 'antidote', 'elixir']) {
+    while (potionTotal(potions) > POTION_TOTAL_CAP && (potions[kind] ?? 0) > 0) {
+      potions[kind]--;
+    }
   }
   const weapons = kit.weapons.filter((w) => w.wear < 100).map((w) => ({ ...w }));
   weapons.sort((a, b) => (weaponBetter(a, b) ? -1 : 1));
@@ -1296,7 +1304,7 @@ function gainGem(state: GameState, events: EventLine[], lead: string): void {
 function gainPotion(state: GameState): { kind: PotionKind; gained: boolean } {
   const kind = pickWeighted(state.rng, POTION_DROP);
   const p = state.player;
-  if ((p.potions[kind] ?? 0) >= POTION_CAP) {
+  if (potionTotal(p.potions) >= POTION_TOTAL_CAP) {
     dropConsumableHere(state, {
       kind: 'potion',
       name: `${POTION_NAMES[kind]}の瓶`,
@@ -1779,7 +1787,7 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
           switch (f.trapKind ?? 'poison') {
             case 'poison':
               p.condition -= 12;
-              p.poisonTurns = 4;
+              p.poisonTurns = 8;
               events.push(bad('足元で乾いた音がした——毒の棘だ。傷は浅いが、熱が血を巡り始める。'));
               break;
             case 'blade':
@@ -1846,8 +1854,8 @@ function stepOnTile(state: GameState, events: EventLine[]): void {
       }
     } else if (item.kind === 'potion') {
       const kind = item.potionKind ?? 'murk';
-      if ((p.potions[kind] ?? 0) >= POTION_CAP) {
-        events.push('薬瓶が落ちている。だが同じ薬で袋はもう一杯だ。');
+      if (potionTotal(p.potions) >= POTION_TOTAL_CAP) {
+        events.push('薬瓶が落ちている。だが薬の袋はもう一杯だ。');
       } else {
         item.taken = true;
         p.potions[kind] = (p.potions[kind] ?? 0) + 1;
@@ -2050,7 +2058,7 @@ function doDrink(state: GameState, events: EventLine[]): void {
   const p = state.player;
   if (f.badWater) {
     p.condition -= 10;
-    p.poisonTurns = 4;
+    p.poisonTurns = 8;
     events.push(bad('一口含んで吐き出した。遅かった——舌を刺すほど苦い。悪い水だ。'));
   } else {
     p.condition = Math.min(100, p.condition + 20);
@@ -2139,7 +2147,7 @@ function doOpen(state: GameState, events: EventLine[]): void {
       const sub = state.rng.next();
       if (sub < 0.4) {
         p.condition -= 14;
-        p.poisonTurns = 3;
+        p.poisonTurns = 6;
         events.push(bad('蓋を開けた瞬間、留め金の奥で針が跳ねた。指先から毒の熱が這い上がる。'));
       } else if (sub < 0.7) {
         p.condition -= 16 + Math.floor(state.rng.next() * 8);
@@ -2297,6 +2305,10 @@ function doRest(state: GameState, events: EventLine[]): void {
   // 空腹だと休んでも回復しない（空腹・装備が効く、の学習材料 §7）
   if (p.hunger >= 100) {
     events.push('壁に背を預けた。だが飢えで眠れず、体は少しも休まらない。');
+  } else if (p.poisonTurns > 0) {
+    // 毒が血を巡るうちは傷が塞がらない——休んでも毒に削られるだけ。
+    // 解毒薬（か霊薬）で毒を抜くのが先。なければ糧食と傷薬で食いつなぐしかない
+    events.push('壁に背を預けて休んだ。だが毒が血を巡るうちは、傷は塞がらない。');
   } else if (p.condition >= REST_CAP) {
     events.push('壁に背を預けて休んだ。浅い傷は落ち着いたが、深い疲れは地上でなければ抜けない。');
   } else if (p.hunger >= 80) {
@@ -2329,7 +2341,7 @@ function applyPotionEffect(state: GameState, kind: PotionKind, events: EventLine
       events.push('濁り薬を飲んだ。……何も起きない。ただの濁り水だったのか。');
     } else {
       p.condition -= 8;
-      p.poisonTurns = 2;
+      p.poisonTurns = 4;
       events.push(bad('濁り薬を飲んだ。腹の奥が焼けるように痛む。悪いものだったらしい。'));
     }
     return;
