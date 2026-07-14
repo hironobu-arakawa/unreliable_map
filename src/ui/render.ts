@@ -16,10 +16,12 @@ import {
   currentFloor,
   eventText,
   eventTone,
+  foeAssessment,
   hungerWord,
   KIND_WORD,
   POTION_NAMES,
   torchWord,
+  visibleFoes,
   weaponWord,
   type EventLine,
   type GameState,
@@ -142,6 +144,41 @@ function renderEventsHtml(history: EventLine[][]): string {
     }
   });
   return items.join('');
+}
+
+/**
+ * 対峙: いま見えている敵と、その危険度ラベル（§7）を常時出す。
+ * 敵の方へ動けば攻撃になるので、踏み込む前にここで読める（憲法5: ラベルは言葉、数字は出さない）。
+ * 危険度を押し上げている要因（傷み・空腹・囲まれ）も添える——死亡ログと同じ材料。
+ */
+function renderFoesHtml(state: GameState): string {
+  const foes = visibleFoes(state);
+  if (foes.length === 0) return '';
+  return foes
+    .map((e) => {
+      const a = foeAssessment(state, e);
+      const dir = foeDirWord(state, e.pos);
+      const adjacent = Math.abs(e.pos.x - state.pos.x) + Math.abs(e.pos.y - state.pos.y) === 1;
+      const sleeping = (e.sleepTurns ?? 0) > 0;
+      const danger = `危険度：${a.label}`;
+      const dangerHtml =
+        a.label === 'かなり危険' || a.label === '死の気配'
+          ? `<span class="foe-danger bad">${danger}</span>`
+          : `<span class="foe-danger">${danger}</span>`;
+      const note = sleeping ? '（眠っている）' : adjacent ? '（間合いの内だ）' : '';
+      const factors = a.factors.length > 0 ? `<span class="meta">——${escapeHtml(a.factors.join('・'))}</span>` : '';
+      return `<li>${escapeHtml(`${dir}に${e.name}`)}${escapeHtml(note)}｜${dangerHtml}${factors}</li>`;
+    })
+    .join('');
+}
+
+/** プレイヤーから見た敵の方角の言葉（8方位） */
+function foeDirWord(state: GameState, pos: Vec): string {
+  const dx = pos.x - state.pos.x;
+  const dy = pos.y - state.pos.y;
+  const ns = dy < 0 ? '北' : dy > 0 ? '南' : '';
+  const we = dx < 0 ? '西' : dx > 0 ? '東' : '';
+  return ns + we || 'すぐ近く';
 }
 
 function renderSensesHtml(state: GameState): string {
@@ -272,9 +309,11 @@ function renderDebug(state: GameState): string {
   lines.push(
     `condition=${p.condition.toFixed(1)} hunger=${p.hunger.toFixed(1)} armor=${p.armor ? gearTag(p.armor.kind, p.armor.wear, p.armor.bonus) : 'none'} torch=${p.torch.toFixed(1)}+${p.spareTorches}本 poison=${p.poisonTurns} numb=${p.numbTurns} haste=${p.hasteTurns} weapons=${p.weapons.map((w) => gearTag(w.kind, w.wear, w.bonus)).join('/') || 'fists'} treasure=${p.hasTreasure} 薬=${JSON.stringify(p.potions)}`,
   );
-  if (state.pending) {
-    const a = state.pending.assessment;
-    lines.push(`encounter: risk=${a.internalRisk.toFixed(2)}（${a.label}）`);
+  const engIds = Object.keys(state.engagements);
+  if (engIds.length > 0) {
+    lines.push(
+      `engagements: ${engIds.map((id) => `${id}=${state.engagements[id].label}`).join(' ')}`,
+    );
   }
   for (const e of floor.entities) {
     if (!e.alive) continue;
@@ -321,6 +360,8 @@ export type ScreenView = {
   /** #map に付ける明るさクラス（松明の帯と連動） */
   torchClass: string;
   eventsHtml: string;
+  /** 対峙: 見えている敵と危険度ラベル（常時表示） */
+  foesHtml: string;
   sensesHtml: string;
   claimsHtml: string;
   statusHtml: string;
@@ -346,6 +387,7 @@ export function renderView(state: GameState, opts: RenderOptions = {}): ScreenVi
     mapHtml: renderMapHtml(state),
     torchClass: torchClass(state.player.torch),
     eventsHtml: renderEventsHtml(history),
+    foesHtml: renderFoesHtml(state),
     sensesHtml: renderSensesHtml(state),
     claimsHtml: renderClaimsHtml(state),
     statusHtml: renderStatusHtml(state),

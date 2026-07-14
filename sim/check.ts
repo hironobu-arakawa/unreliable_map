@@ -171,25 +171,45 @@ function autoplay(seed: number): BotResult {
     if (actions.length === 0) break;
     let chosen: Action | undefined;
 
-    if (state.phase === 'encounter') {
-      // 一度刃を合わせたら最後まで打ち合う——ラベル＝「戦い抜いた場合」の帯、の計測を保つ
-      if (state.pending!.rounds > 0) {
-        chosen = { type: 'engage' };
-      } else {
-        // ときどき投げ、あとはランダム寄りに挑む（ラベル別の実リスク計測のため）
-        const throwable = actions.filter(
-          (a) => a.type === 'throwStone' || a.type === 'throwTalisman',
-        );
-        if (throwable.length > 0 && bot.next() < 0.3) {
-          chosen = throwable[Math.floor(bot.next() * throwable.length)];
-        } else {
-          chosen = bot.next() < 0.6 ? { type: 'engage' } : { type: 'retreat' };
-        }
-      }
-    } else {
+    {
       const p = state.player;
       const here = actions;
       const has = (t: Action['type']) => here.find((a) => a.type === t);
+      const floor = currentFloor(state);
+      const dirVec2: Record<string, { x: number; y: number }> = {
+        north: { x: 0, y: -1 }, south: { x: 0, y: 1 }, west: { x: -1, y: 0 }, east: { x: 1, y: 0 },
+      };
+      // 攻撃＝敵のいる方へ動く。まず、いま斬り合い中の相手（engagement）がいれば最後まで打ち合う
+      const attackMoves = (here.filter((a) => a.type === 'move') as Extract<Action, { type: 'move' }>[])
+        .map((m) => {
+          const v = dirVec2[m.dir];
+          const foe = enemyAt(floor, { x: state.pos.x + v.x, y: state.pos.y + v.y });
+          return foe ? { move: m, foe } : null;
+        })
+        .filter((x): x is { move: Extract<Action, { type: 'move' }>; foe: NonNullable<ReturnType<typeof enemyAt>> } => x !== null);
+      const engagedAttack = attackMoves.find((a) => state.engagements[a.foe.id]);
+      if (engagedAttack) {
+        step(state, engagedAttack.move); // 仕掛けた相手は決着まで（§7＝戦い抜いた場合の帯）
+        continue;
+      }
+      if (attackMoves.length > 0) {
+        // ときどき投げ、あとは6割で斬りかかる（ラベル別の実リスク計測のため）
+        const throwable = here.filter(
+          (a) => a.type === 'throwStone' || a.type === 'throwTalisman',
+        );
+        if (throwable.length > 0 && bot.next() < 0.25) {
+          step(state, throwable[Math.floor(bot.next() * throwable.length)]);
+          continue;
+        }
+        if (bot.next() < 0.6) {
+          step(state, attackMoves[Math.floor(bot.next() * attackMoves.length)].move);
+          continue;
+        }
+        // 逃げる: 敵のいない方へ動く
+        const flee = (here.filter((a) => a.type === 'move') as Extract<Action, { type: 'move' }>[])
+          .filter((m) => { const v = dirVec2[m.dir]; return !enemyAt(floor, { x: state.pos.x + v.x, y: state.pos.y + v.y }); });
+        if (flee.length > 0) { step(state, flee[Math.floor(bot.next() * flee.length)]); continue; }
+      }
       // 自動装備が廃止されたので、良い得物を拾っていたら持ち替え、足元の良い鎧には着替える
       const betterIdx = p.weapons.findIndex((w, i) => i > 0 && weaponBetter(w, p.weapons[0]));
       if (betterIdx > 0) {

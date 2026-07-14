@@ -1,24 +1,26 @@
 // スキル実験（開発者向け）: 「判断は生存を動かすか」を測る
 // 実行: npm run sim:skill
 //
-// 3種のbotを比較する:
-//   fight  — 目的地へ最短移動し、遭遇は常に挑む（スキルなしの基準線）
-//   smart  — fight ＋ 危険ラベルで挑む/退くを選び、追跡者から逃げる（危険度を読むスキル）
+// 3種のbotを比較する（戦闘はマップ上の bump-to-attack）:
+//   fight  — 目的地へ最短移動し、隣接した敵は常に斬る（スキルなしの基準線）
+//   smart  — fight ＋ 危険ラベルで斬る/退くを選び、撒ける（遅い）追跡者からは逃げる
 //   reader — smart ＋ 古地図・メモを読む（罠の主張位置を避け、空腹時は泉の主張へ、宝の主張へ探索を寄せる）
 //
-// smart > fight なら「危険度ラベルは飾りではない」。
-// reader > smart なら「地図を読むことが機構的に報われている」＝このゲームの主題が機能している。
+// reader > smart/fight なら「地図を読むことが機構的に報われている」＝このゲームの主題が機能している。
+// （マップ戦闘では同速の敵から逃げ切れないため、戦術的な退避=smartの寄与は小さく、
+//   どの賭けを取るかの戦略的判断=readerが生存を大きく動かす。§7の帯検証は npm run sim 側で担保）
 
 import { SILENT_WELL } from '../src/core/character';
 import { confidenceLabel } from '../src/core/confidence';
 import { assessDanger } from '../src/core/danger';
 import { gemTotal } from '../src/core/economy';
 import { armorGuard, weaponBetter } from '../src/core/gear';
-import { featureAt, isWalkable, itemAt, tileAt } from '../src/core/generate';
+import { enemyAt, featureAt, isWalkable, itemAt, tileAt } from '../src/core/generate';
 import { hashSeed, mulberry32, type RNG } from '../src/core/rng';
 import {
   availableActions,
   currentFloor,
+  foeAssessment,
   newGame,
   step,
   type Action,
@@ -156,7 +158,6 @@ function run(seed: number, brain: Brain): RunResult {
   const rng: RNG = mulberry32(hashSeed(seed, 'skillbot'));
   const blacklist = new Set<string>(); // readerが「行ってみたが無かった」主張
   const skippedBets = new Set<string>(); // 記録を信じて開けない/飲まないと決めた場所
-  let consecutiveRetreats = 0;
   let resting = false; // 休息のヒステリシス（中途半端な体力で戦いに入らない）
   let guard = 0;
 
@@ -169,79 +170,92 @@ function run(seed: number, brain: Brain): RunResult {
     const p = state.player;
     const giveUp = state.turn > 320; // 4〜6階層に合わせて粘る
 
-    // ---- 遭遇 ----
-    if (state.phase === 'encounter') {
-      if (brain === 'fight') {
-        step(state, { type: 'engage' });
-        continue;
-      }
-      const label = state.pending!.assessment.label;
-      // 打ち合いの最中: 形勢を読み直し、死の気配に傾いたら離脱。
-      // 深手なら（相手の追撃を覚悟の上で）薬を呷って立て直す
-      if (state.pending!.rounds > 0) {
-        if (label === '死の気配') {
-          step(state, { type: 'retreat' });
-        } else {
-          const heal =
-            p.condition <= 35
-              ? actions.find(
-                  (a): a is Extract<Action, { type: 'drinkPotion' }> =>
-                    a.type === 'drinkPotion' &&
-                    (a.kind === 'salve' || a.kind === 'elixir' || a.kind === 'murk'),
-                )
-              : undefined;
-          if (heal) step(state, heal);
-          else step(state, { type: 'engage' });
-        }
-        continue;
-      }
-      // 危険度ラベルを読む: かなり危険/死の気配だけは避ける。それ以下は挑む
-      // （逃げ続けても敵は消えない。消耗との天秤で「上位ラベルのみ回避」が上手いプレイ）
+    // ---- 隣接した敵: 斬るか、退くか（マップ上の戦闘。移動＝攻撃／離脱） ----
+    const adj = DIRS.map(({ dir, v }) => {
+      const foe = enemyAt(floor, { x: state.pos.x + v.x, y: state.pos.y + v.y });
+      return foe ? { dir, foe } : null;
+    }).filter((x): x is { dir: Dir; foe: NonNullable<ReturnType<typeof enemyAt>> } => x !== null);
+
+    if (adj.length > 0) {
+      const worst = adj.reduce((m, a) =>
+        foeAssessment(state, a.foe).internalRisk > foeAssessment(state, m.foe).internalRisk ? a : m,
+      );
+      // 斬るなら一番弱い隣接敵から片付ける（数を減らせば被弾が減る）
+      const weakest = adj.reduce((m, a) => (a.foe.strength < m.foe.strength ? a : m));
+      const strike = { type: 'move', dir: weakest.dir } as const;
+      const label = foeAssessment(state, worst.foe).label;
+      const engagedAdj = adj.find((a) => state.engagements[a.foe.id]);
       const tooRisky = label === 'かなり危険' || label === '死の気配';
-      // 上位ラベル相手には、まず一投で危険度を下げにいく
-      if (tooRisky && !state.pending!.thrown) {
-        if (brain === 'reader') {
-          // 効くと「知っている」か「噂がある」札だけ投げる（無情報の札は逆効きの賭け）
-          const enemy = floor.entities.find((e) => e.id === state.pending!.enemyId)!;
-          let chosenPattern: string | undefined;
-          for (const [pattern, count] of Object.entries(p.talismans)) {
-            if (count <= 0) continue;
-            const known = state.talismanKnowledge[pattern]?.[enemy.kind];
-            if (known === 'strong') {
-              chosenPattern = pattern;
-              break;
-            }
-            if (known) continue; // 並・逆効きと知っているなら投げない
-            const rumor = state.claims.find(
-              (c) =>
-                !c.verified &&
-                c.kind === 'lore' &&
-                c.lorePattern === pattern &&
-                c.loreTargetKind === enemy.kind,
-            );
-            if (rumor?.assertedSafety === 'good') chosenPattern = pattern; // 噂を信じる
-          }
-          if (chosenPattern) {
-            step(state, { type: 'throwTalisman', pattern: chosenPattern });
-            continue;
+      const healAct = (): Action | null =>
+        p.condition <= 40
+          ? (actions.find(
+              (a): a is Extract<Action, { type: 'drinkPotion' }> =>
+                a.type === 'drinkPotion' &&
+                (a.kind === 'salve' || a.kind === 'elixir' || a.kind === 'murk'),
+            ) ?? null)
+          : null;
+      const fleeDir = (): Dir | null => {
+        let best: Dir | null = null;
+        let bestD = -1;
+        for (const { dir, v } of DIRS) {
+          const q = { x: state.pos.x + v.x, y: state.pos.y + v.y };
+          if (!isWalkable(floor, q) || enemyAt(floor, q)) continue;
+          const d = Math.min(...adj.map((a) => manhattan(q, a.foe.pos)));
+          if (d > bestD) {
+            bestD = d;
+            best = dir;
           }
         }
-        if (p.stones > 0) {
-          step(state, { type: 'throwStone' });
-          continue;
+        return best;
+      };
+      const softener = (): Action | null => {
+        if (brain !== 'reader') {
+          return p.stones > 0 ? { type: 'throwStone', targetId: worst.foe.id } : null;
         }
-      }
-      const cornered = consecutiveRetreats >= 3;
-      if (!tooRisky || cornered) {
-        step(state, { type: 'engage' });
-        consecutiveRetreats = 0;
+        // reader: 効くと「知っている」か「噂がある」札だけ投げる（無情報は逆効きの賭け）
+        for (const [pattern, count] of Object.entries(p.talismans)) {
+          if (count <= 0) continue;
+          const known = state.talismanKnowledge[pattern]?.[worst.foe.kind];
+          if (known === 'strong') return { type: 'throwTalisman', pattern, targetId: worst.foe.id };
+          if (known) continue;
+          const rumor = state.claims.find(
+            (c) =>
+              !c.verified &&
+              c.kind === 'lore' &&
+              c.lorePattern === pattern &&
+              c.loreTargetKind === worst.foe.kind,
+          );
+          if (rumor?.assertedSafety === 'good')
+            return { type: 'throwTalisman', pattern, targetId: worst.foe.id };
+        }
+        return p.stones > 0 ? { type: 'throwStone', targetId: worst.foe.id } : null;
+      };
+
+      // 遅い相手（金属系＝moveEvery≥2）だけは走って撒ける。同速の相手からは逃げ切れない
+      const canShake = worst.foe.moveEvery >= 2 && fleeDir() !== null;
+      let act: Action;
+      if (brain === 'fight') {
+        act = strike; // 常に斬る（弱い方から）
+      } else if (engagedAdj) {
+        // 斬り合い継続。死の気配に傾いたら、薬で立て直すか（撒ける相手なら）退く
+        if (foeAssessment(state, engagedAdj.foe).label === '死の気配') {
+          act =
+            healAct() ??
+            (engagedAdj.foe.moveEvery >= 2 && fleeDir()
+              ? { type: 'move', dir: fleeDir()! }
+              : strike);
+        } else {
+          act = strike;
+        }
+      } else if (tooRisky) {
+        // 危険なら一投で削る → 撒ける相手なら退く → 振り切れないなら斬るしかない
+        act = softener() ?? (canShake ? { type: 'move', dir: fleeDir()! } : strike);
       } else {
-        step(state, { type: 'retreat' });
-        consecutiveRetreats++;
+        act = strike; // 許容範囲＝斬る
       }
+      step(state, act);
       continue;
     }
-    consecutiveRetreats = 0;
 
     // ---- 装備管理: 良い得物を拾っていたら持ち替え、足元の良い鎧には着替える ----
     {

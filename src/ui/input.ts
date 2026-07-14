@@ -40,18 +40,31 @@ const DIR_LABELS: Record<string, string> = {
   east: '東へ',
 };
 
+/** プレイヤーから見た敵の方角の言葉（8方位）。狙いを撃ち分けるための目印 */
+function foeDir(state: GameState, targetId: string): { dir: string; name: string } | null {
+  const floor = currentFloor(state);
+  const e = floor.entities.find((x) => x.id === targetId && x.alive);
+  if (!e) return null;
+  const dx = e.pos.x - state.pos.x;
+  const dy = e.pos.y - state.pos.y;
+  const ns = dy < 0 ? '北' : dy > 0 ? '南' : '';
+  const we = dx < 0 ? '西' : dx > 0 ? '東' : '';
+  return { dir: ns + we || 'すぐ近く', name: e.name };
+}
+
 export function actionLabel(a: Action, state?: GameState): string {
   if (a.type === 'move') return DIR_LABELS[a.dir];
-  if (a.type === 'throwTalisman') return `${a.pattern}の札を投げる`;
   if (a.type === 'drinkPotion') return `${POTION_NAMES[a.kind] ?? '薬'}を飲む`;
-  // 遭遇中の階段は強行離脱（確実に縁は切れるが、背を向ける瞬間は無防備）
-  if (state?.phase === 'encounter') {
-    if (a.type === 'descend') return '階段を降りて逃げる';
-    if (a.type === 'ascend') return '階段を上って逃げる';
-    if (a.type === 'escape') return '地上へ逃げ込む';
+  if (a.type === 'throwStone' || a.type === 'throwFireOil' || a.type === 'throwTalisman') {
+    const what =
+      a.type === 'throwStone' ? '石' : a.type === 'throwFireOil' ? '火油' : `${a.pattern}の札`;
+    const f = state ? foeDir(state, a.targetId) : null;
+    return f ? `${what}を投げる（${f.dir}の${f.name}）` : `${what}を投げる`;
   }
-  // 打ち合いが始まったら「挑む」ではなく「打ち込む」（ターン制戦闘の一手）
-  if (a.type === 'engage' && state?.pending && state.pending.rounds > 0) return '打ち込む';
+  if (a.type === 'steal') {
+    const f = state ? foeDir(state, a.targetId) : null;
+    return f ? `眠る${f.name}の懐を探る` : '懐を探る';
+  }
   if (a.type === 'equipWeapon') {
     const w = state?.player.weapons[a.index];
     return w ? `${weaponWord(w)}に持ち替える` : '持ち替える';

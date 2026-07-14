@@ -247,6 +247,10 @@
       /* 装備の傷みの目盛り（見れば分かる事実）。限界間近は赤 */
       .gauge { color: var(--ink-faint); font-size: 11px; letter-spacing: 0.05em; }
       .gauge.worn { color: var(--red); }
+      /* 対峙: 見えている敵と危険度ラベル。敵の方へ動けば攻撃になる */
+      #foes-panel { border-color: #5c4a2b; }
+      #foes .foe-danger { color: var(--amber); }
+      #foes .foe-danger.bad { color: var(--red); font-weight: 600; }
 
       /* 結末 */
       #end-panel { border-width: 2px; }
@@ -351,6 +355,10 @@
             </details>
           </section>
           <div class="col">
+            <section class="panel" id="foes-panel" hidden>
+              <h2>対峙</h2>
+              <ul id="foes"></ul>
+            </section>
             <section class="panel" id="status-panel">
               <h2>状態</h2>
               <div id="status"></div>

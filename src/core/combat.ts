@@ -219,11 +219,12 @@ export function estimateFightRisk(
         condition -= r.playerDamage;
         lost += r.playerDamage;
       }
-      // 乱戦の横槍: 届いた敵は自分の足の速さで殴ってくる
+      // 乱戦の横槍: 届いた敵は自分の足の速さで殴ってくる。
+      // ただし実戦では的を絞って各個撃破できる余地があるので、横槍は控えめに見積もる（0.6係数）
       for (const b of bystanders) {
         if (round + 1 < b.arrival) continue;
         if ((round + 1 - b.arrival) % b.moveEvery !== 0) continue;
-        if (rng.next() < enemyHitChance(b.strength, b.profile)) {
+        if (rng.next() < enemyHitChance(b.strength, b.profile) * 0.6) {
           const dmg = rollEnemyDamage(b.strength, b.profile, rng);
           condition -= dmg;
           lost += dmg;

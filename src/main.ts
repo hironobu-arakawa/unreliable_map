@@ -32,6 +32,8 @@ const el = {
   endPanel: document.getElementById('end-panel')!,
   map: document.getElementById('map')!,
   events: document.getElementById('events')!,
+  foesPanel: document.getElementById('foes-panel')!,
+  foes: document.getElementById('foes')!,
   sensesPanel: document.getElementById('senses-panel')!,
   senses: document.getElementById('senses')!,
   claimsPanel: document.getElementById('claims-panel')!,
@@ -306,6 +308,8 @@ function draw(): void {
   el.map.innerHTML = view.mapHtml;
   el.map.className = view.torchClass;
   el.events.innerHTML = view.eventsHtml;
+  el.foesPanel.hidden = view.foesHtml === '';
+  el.foes.innerHTML = view.foesHtml;
   el.sensesPanel.hidden = view.sensesHtml === '';
   el.senses.innerHTML = view.sensesHtml;
   el.claimsPanel.hidden = view.claimsHtml === '';
