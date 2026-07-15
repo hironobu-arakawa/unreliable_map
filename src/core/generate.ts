@@ -325,16 +325,18 @@ function generateFloor(
   for (let i = 0; i < chestCount; i++) {
     const p = takeFreeCell(floor, cells, used);
     if (!p) break;
+    // 箱は「大当たりか、大外れか」。石（換金＝大メリット）とミミック（大デメリット）を上位に、
+    // 空・糧食・装備の中間枠は薄く——開けるかどうかの賭けを重くする（頻度順: 石>薬>札>ミミック…）
     const content = pickWeighted(rng, [
-      ['weapon', 0.12 * (0.5 + b.rewardWeaponBias)],
-      ['armor', 0.07 * (0.5 + b.rewardWeaponBias)],
-      ['potion', 0.24], // 箱を開けて嬉しい当たりの筆頭
-      ['food', 0.04], // 糧食を箱に仕舞う者は稀（床・敵から拾う日用品）
-      ['talisman', 0.15],
-      ['gem', 0.1 + (1 - upperness) * 0.08], // 換金できる石は箱の定番。深い箱ほど良い石が眠る
-      ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
-      ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
-      ['empty', 0.1],
+      ['gem', 0.22 + (1 - upperness) * 0.12], // 換金できる石＝箱の花形。深い箱ほど良い石
+      ['potion', 0.18],
+      ['talisman', 0.14],
+      ['mimic', 0.1 * (0.6 + b.metallicEnemyRate)], // 潜むもの＝箱最大の危険
+      ['needle', 0.1 * (0.5 + upperness * b.upperTrapRate)],
+      ['weapon', 0.08 * (0.5 + b.rewardWeaponBias)],
+      ['armor', 0.05 * (0.5 + b.rewardWeaponBias)],
+      ['empty', 0.05],
+      ['food', 0.03],
     ] as const);
     floor.features.push({ id: `f${depth}-chest${i}`, kind: 'chest', pos: p, chestContent: content });
     if (content === 'mimic') {
