@@ -328,9 +328,9 @@ function generateFloor(
     const content = pickWeighted(rng, [
       ['weapon', 0.12 * (0.5 + b.rewardWeaponBias)],
       ['armor', 0.07 * (0.5 + b.rewardWeaponBias)],
-      ['potion', 0.15],
-      ['food', 0.15],
-      ['talisman', 0.13],
+      ['potion', 0.24], // 箱を開けて嬉しい当たりの筆頭
+      ['food', 0.04], // 糧食を箱に仕舞う者は稀（床・敵から拾う日用品）
+      ['talisman', 0.15],
       ['gem', 0.1 + (1 - upperness) * 0.08], // 換金できる石は箱の定番。深い箱ほど良い石が眠る
       ['needle', 0.15 * (0.5 + upperness * b.upperTrapRate)],
       ['mimic', 0.08 * (0.5 + b.metallicEnemyRate)],
