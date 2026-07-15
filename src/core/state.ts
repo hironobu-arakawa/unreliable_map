@@ -202,6 +202,8 @@ export type GameState = {
   respawnSeq: number;
   /** 床に置いていった装備のID連番 */
   dropSeq: number;
+  /** いま視界内で「対峙」として告知済みの敵ID（視界から外れると解除＝再登場で再告知） */
+  foesAnnounced: Set<string>;
 };
 
 export type Action =
@@ -360,6 +362,7 @@ export function newGame(character: DungeonCharacter, runSeed: number, kit?: Star
     visitedFloors: new Set([0]),
     respawnSeq: 0,
     dropSeq: 0,
+    foesAnnounced: new Set(),
   };
 
   state.knowledge[0].walked.add(key(state.pos));
@@ -415,7 +418,35 @@ function look(state: GameState, events: EventLine[]): void {
       know.seen.add(key(p)); // 地形の記憶は累積（静的な事実は忘れない）
     }
   }
+  announceFoes(state, events);
   verifyClaims(state, events);
+}
+
+/**
+ * 敵が初めて視界に入った時、その一体を危険度つきで出来事欄に告知する（一度だけ）。
+ * 視界から外れれば告知は解除され、再登場で告知し直す。
+ * 「対峙」パネルを見ていなくても、出来事欄だけで“何が・どの向きに・どれだけ危ないか”が分かる。
+ */
+function announceFoes(state: GameState, events: EventLine[]): void {
+  const floor = currentFloor(state);
+  for (const e of floor.entities) {
+    const visible = e.alive && !e.dormant && state.visibleNow.has(key(e.pos));
+    if (!visible) {
+      state.foesAnnounced.delete(e.id);
+      continue;
+    }
+    if (state.foesAnnounced.has(e.id)) continue;
+    state.foesAnnounced.add(e.id);
+    const a = foeAssessment(state, e);
+    const dir = dirWord8(state.pos, e.pos);
+    const sleeping = (e.sleepTurns ?? 0) > 0;
+    const lead = sleeping
+      ? `${dir}に${e.name}が眠っている`
+      : `${dir}に${e.name}——危険度：${a.label}`;
+    const dire = a.label === 'かなり危険' || a.label === '死の気配';
+    events.push(dire && !sleeping ? bad(`${lead}。`) : `${lead}。`);
+    if (a.factors.length > 0) events.push(`（${a.factors.join('・')}）`);
+  }
 }
 
 // ---- 情報の検証（行動後の対応表示 §10 ＋ 計測 §12） ----
