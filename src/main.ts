@@ -8,7 +8,7 @@ import { newGame, step, type Action, type EventLine, type GameState } from './co
 import { baseKitClone, repairAll, repairFee, SHOP_ITEMS } from './ui/shop';
 import { dangerRateByLabel, hitRateByLabel } from './core/telemetry';
 import type { DungeonCharacter } from './core/types';
-import { bindKeyboard, renderActions, type MenuCategory } from './ui/input';
+import { bindKeyboard, renderActions, type MenuState } from './ui/input';
 import {
   describeKit,
   kitFromPlayer,
@@ -52,7 +52,7 @@ let currentBranchId = profile.lastBranch ?? BRANCHES[0].id;
 /** 出来事の履歴（新しいものが末尾）。直近を明るく、過去を薄く見せるためUI層が持つ */
 let eventHistory: EventLine[][] = [];
 /** 開いている行動サブメニュー（投げる/荷袋）。行動すれば閉じる */
-let actionMenu: MenuCategory | null = null;
+let actionMenu: MenuState = null;
 let runRecorded = false;
 /** ?seed= による再現潜行か（帳面に残さず、持ち越しも使わない） */
 let isReplay = false;
@@ -284,7 +284,7 @@ function endMetaLines(s: GameState): string[] {
   ];
 }
 
-function onMenu(m: MenuCategory | null): void {
+function onMenu(m: MenuState): void {
   actionMenu = m;
   draw();
 }
