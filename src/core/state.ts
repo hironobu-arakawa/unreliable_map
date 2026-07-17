@@ -304,7 +304,9 @@ function mergeKit(kit?: StartKit): StartKit {
     potions,
     food: Math.min(FOOD_CAP, Math.max(BASE_KIT.food, kit.food)),
     stones: Math.min(STONE_CAP, Math.max(BASE_KIT.stones, kit.stones)),
-    spareTorches: Math.max(BASE_KIT.spareTorches, kit.spareTorches),
+    // 松明は使い切ったぶんは戻らない——生還者は残した本数のまま（買うか、節約するか）。
+    // 標準の2本が保証されるのは新規／死亡後のやり直しだけ（上の !kit 分岐）
+    spareTorches: kit.spareTorches,
     fireOil: Math.max(BASE_KIT.fireOil, kit.fireOil ?? 0),
     weapons: weapons.length > 0 ? weapons : baseWeapons,
     armor: kit.armor ? { ...kit.armor } : baseArmor,

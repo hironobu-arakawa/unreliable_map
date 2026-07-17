@@ -381,14 +381,10 @@ function generateFloor(
     floor.entities.push(makeEnemy(character, depth, maxDepth, rng, p, `e${depth}-${i}`));
   }
 
-  // アイテム: 糧食は各階確実＋ときどき2つ（マップ拡大に合わせた消耗予算）、薬はときどき、武器は中層に性格次第で
-  {
+  // アイテム: 糧食はときどき（ばら撒きすぎない——飢えは管理する消耗）、薬はときどき、武器は中層に性格次第で
+  if (rng.next() < 0.7) {
     const p = takeFreeCell(floor, cells, used);
     if (p) floor.items.push({ id: `i${depth}-food`, kind: 'food', name: '乾いた糧食', pos: p, taken: false });
-    if (rng.next() < 0.45) {
-      const q = takeFreeCell(floor, cells, used);
-      if (q) floor.items.push({ id: `i${depth}-food2`, kind: 'food', name: '乾いた糧食', pos: q, taken: false });
-    }
   }
   // 石: 各階に1〜2個。安全だが弱い投擲の弾
   {
@@ -445,22 +441,22 @@ function generateFloor(
       });
     }
   }
-  // 宝石: 深い階の土にときどき埋もれている
+  // 宝石: 各階の土にときどき埋もれている。換金できる石は探索の実入りの柱（深い階ほど良い石）
   {
     const depthFrac = maxDepth > 1 ? (depth - 1) / (maxDepth - 1) : 0;
-    if (depth >= 2 && rng.next() < 0.06 + depthFrac * 0.12) {
+    const gemCount = rng.next() < 0.14 + depthFrac * 0.22 ? (rng.next() < 0.2 ? 2 : 1) : 0;
+    for (let i = 0; i < gemCount; i++) {
       const p = takeFreeCell(floor, cells, used);
-      if (p) {
-        const gemKind = rollGemKind(rng, depthFrac);
-        floor.items.push({
-          id: `i${depth}-gem`,
-          kind: 'gem',
-          name: GEM_DATA[gemKind].name,
-          pos: p,
-          taken: false,
-          gemKind,
-        });
-      }
+      if (!p) break;
+      const gemKind = rollGemKind(rng, depthFrac);
+      floor.items.push({
+        id: `i${depth}-gem${i}`,
+        kind: 'gem',
+        name: GEM_DATA[gemKind].name,
+        pos: p,
+        taken: false,
+        gemKind,
+      });
     }
   }
 
