@@ -148,6 +148,32 @@ npm run dev      # → 表示されたURLをブラウザで開く
 - 敵がマップに `&` で見えるのは**いま視界内にいる時だけ**。地形の記憶は残るが、動くものの過去の目撃位置は当てにならない。
 - 遭遇時に「退く」と実際に1歩下がって距離を作る。追われながらでも、階段を降りれば振り切れる。
 
+## 公開版デプロイ（最小構成・compose一撃）
+
+台帳・預り金・持ち越しを**ゲスト（Cookie）ごとにクラウド保存**する最小バックエンド付き。
+認証は無し（後付け前提）。**サーバが無くてもゲームはオフラインで動く**（同期はベストエフォート）。
+
+構成は2コンテナ:
+
+- **caddy** … TLS(Let's Encrypt)自動・`dist/` 静的配信・`/api` を app へ中継（同一オリジン＝CORS不要）
+- **app** … Fastify + SQLite（`./data` に永続。Lightsailのスナップショット対象）
+
+```sh
+cp .env.example .env      # DOMAIN と COOKIE_SECRET を埋める（COOKIE_SECRET は openssl rand -hex 32）
+npm ci && npm run build   # dist/ を作る
+docker compose up -d --build
+# Lightsailの静的IPを DOMAIN に向けておく（Caddyが証明書を自動取得）
+
+# ローカル確認（TLSなし）:  DOMAIN=:80 docker compose up --build  → http://localhost
+```
+
+- **API**: `GET /api/profile`（ゲストの台帳を返す・Cookie発行）／`PUT /api/profile`（LWWで保存）。
+  保存は毎行動ではなく**潜行終了・買い物のときだけ**（`src/net/sync.ts`）。
+- **バックアップ**: SQLiteは `./data/app.db`（WAL）。app が**夜間に整合dumpを `./data/backups/` へ**吐くので、
+  Lightsailのインスタンス・スナップショットが一貫dumpごと保全する。さらに堅くするなら dump を S3 へ nightly コピー。
+- **後の拡張**: 認証（ゲストID→本登録の昇格）、決定論コアを Node で再実行する**リプレイ検証**・
+  リーダーボードは、この app に足すだけで載る（core は UI非依存）。
+
 ## 開発者向け
 
 ```sh

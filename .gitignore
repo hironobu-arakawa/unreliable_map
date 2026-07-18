@@ -1,3 +1,8 @@
 node_modules/
 dist/
 .claude/settings.local.json
+
+# 公開版バックエンドの生成物・秘密・永続データ
+server/node_modules/
+data/
+.env

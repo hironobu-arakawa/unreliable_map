@@ -1,0 +1,46 @@
+# compose 一撃で公開版を立ち上げる最小構成。
+#   caddy … TLS(Let's Encrypt)自動・dist/ 静的配信・/api を app へ中継（同一オリジン＝CORS不要）
+#   app   … Fastify + SQLite（/data に永続。Lightsailスナップショット対象）
+#
+# 手順:
+#   1) npm run build      # → dist/ を作る
+#   2) DOMAIN=example.com docker compose up -d --build
+#   3) Lightsail の静的IPを DOMAIN に向けておく（Caddyが証明書を自動取得）
+#
+# ローカル動作確認（TLSなし・localhost）:
+#   DOMAIN=:80 docker compose up --build   # http://localhost で確認
+#
+# better-sqlite3 が prebuilt を取得できずビルドに失敗する環境では、
+# server/Dockerfile の npm install 前に build-essential python3 を apt-get で入れる。
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      - DOMAIN=${DOMAIN:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./dist:/srv:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+  app:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_FILE=/data/app.db
+      - COOKIE_SECRET=${COOKIE_SECRET:-dev-insecure-change-me}
+    volumes:
+      - ./data:/data # SQLite本体＋夜間dump（← スナップショットで丸ごと保全）
+
+volumes:
+  caddy_data:
+  caddy_config:

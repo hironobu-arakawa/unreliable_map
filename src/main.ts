@@ -13,9 +13,9 @@ import {
   describeKit,
   kitFromPlayer,
   loadProfile,
-  saveProfile,
   wellRecord,
 } from './ui/profile';
+import { bootstrapSync, persist } from './net/sync';
 import { escapeHtml, renderView } from './ui/render';
 
 // ---- DOM ----
@@ -44,7 +44,8 @@ const el = {
 };
 
 // ---- 状態 ----
-const profile = loadProfile();
+// profile は手元（localStorage）の真実。起動時にクラウド（あれば）と突き合わせて差し替わり得る
+let profile = loadProfile();
 let state: GameState | null = null;
 let currentCharacter: DungeonCharacter = SILENT_WELL;
 /** いま台帳で開いているギルド支部 */
@@ -115,7 +116,7 @@ function showAtlas(): void {
       if (!profile.carryover || fee <= 0 || profile.coin < fee) return;
       profile.coin -= fee;
       repairAll(profile.carryover);
-      saveProfile(profile);
+      persist(profile);
       showAtlas();
     });
     el.shop.appendChild(btn);
@@ -136,7 +137,7 @@ function showAtlas(): void {
       if (item.canBuy && !item.canBuy(profile.carryover)) return;
       profile.coin -= item.price;
       item.apply(profile.carryover);
-      saveProfile(profile);
+      persist(profile);
       showAtlas();
     });
     el.shop.appendChild(btn);
@@ -154,7 +155,7 @@ function showAtlas(): void {
     btn.addEventListener('click', () => {
       currentBranchId = b.id;
       profile.lastBranch = b.id;
-      saveProfile(profile);
+      persist(profile);
       showAtlas();
     });
     el.branches.appendChild(btn);
@@ -225,7 +226,7 @@ function startRun(character: DungeonCharacter, replaySeed?: number): void {
   if (!isReplay) {
     const rec = wellRecord(profile, character.id);
     rec.dives++;
-    saveProfile(profile);
+    persist(profile);
   }
 
   el.atlas.hidden = true;
@@ -256,7 +257,7 @@ function finalizeRun(): void {
       rec.deaths++;
       profile.carryover = null;
     }
-    saveProfile(profile);
+    persist(profile);
   }
 
   // 潜行終了: 計測ログをコンソールへ（§12）
@@ -363,3 +364,13 @@ if (rawSeed !== null && /^\d+$/.test(rawSeed)) {
 } else {
   showAtlas();
 }
+
+// クラウド同期（あれば）: 起動後にサーバと突き合わせる。サーバ版が新しければ台帳を差し替えて再描画。
+// サーバが無い・オフラインなら何も起きない（ローカルのまま遊べる）。
+void bootstrapSync(profile).then(({ profile: synced, adopted }) => {
+  if (!adopted) return;
+  profile = synced;
+  currentBranchId = profile.lastBranch ?? currentBranchId;
+  // 台帳を開いているときだけ描き直す（潜行中の画面は乱さない）
+  if (!el.atlas.hidden) showAtlas();
+});

@@ -1,0 +1,22 @@
+{
+  "name": "unreliable-map-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "最小の永続化バックエンド: ゲスト(Cookie)ごとに profile を保存する。認証は後付け。",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^10.0.1",
+    "better-sqlite3": "^11.3.0",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

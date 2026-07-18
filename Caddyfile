@@ -1,0 +1,18 @@
+# {$DOMAIN} は compose の環境変数から。
+#   本番: DOMAIN=example.com  → 自動でTLS取得
+#   ローカル: DOMAIN=:80       → http://localhost
+{$DOMAIN} {
+	encode zstd gzip
+
+	# /api/* はアプリへ中継（同一オリジンなので Cookie/CORS が素直）
+	handle /api/* {
+		reverse_proxy app:3000
+	}
+
+	# それ以外はビルド済みゲーム本体を配信
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
